@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { containsSecret } from './brain.js';
+import { containsSecret, redactSecrets } from './brain.js';
 import type { BrainStore } from './brain.js';
 
 export type DocKind = 'adr' | 'recipe';
@@ -28,29 +28,19 @@ function text(value: unknown, name: string, min: number, max: number): string {
   if (containsSecret(value)) throw new Error('refusing to store a secret');
   return value;
 }
+/** Text rendered into a heading or a list line must not contain a line break (it could forge Status lines or headings). */
+function oneLine(value: unknown, name: string, min: number, max: number): string {
+  if (typeof value === 'string' && /[\r\n]/.test(value)) throw new Error(`invalid ${name}: no line breaks allowed`);
+  return text(value, name, min, max);
+}
 function list(value: unknown, name: string, maxItems: number, maxLength: number): string[] {
   if (!Array.isArray(value) || value.length > maxItems) throw new Error(`invalid ${name}`);
-  return (value as unknown[]).map(item => text(item, name, 0, maxLength));
+  return (value as unknown[]).map(item => oneLine(item, name, 0, maxLength));
 }
 function check(project: unknown, source: unknown): string {
   if (typeof project !== 'string' || !isAbsolute(project)) throw new Error('project must be an absolute path');
   if (typeof source !== 'string' || !DOC_SOURCES.includes(source)) throw new Error('invalid source');
   return project;
-}
-
-/** Replace each secret-looking token (and the value after a `key:` token) with [redacted]; whole lines are the fallback. */
-export function redact(value: string): string {
-  if (!containsSecret(value)) return value;
-  const parts = value.split(/(\s+)/);
-  for (let i = 0; i < parts.length; i += 2) {
-    if (!containsSecret(parts[i]!)) continue;
-    const hadSeparator = /[:=]$/.test(parts[i]!);
-    parts[i] = '[redacted]';
-    if (hadSeparator && i + 2 < parts.length) parts[i + 2] = '[redacted]';
-  }
-  let out = parts.join('');
-  if (containsSecret(out)) out = out.split('\n').map(line => containsSecret(line) ? '[redacted]' : line).join('\n');
-  return containsSecret(out) ? '[redacted]' : out;
 }
 
 const section = (heading: string, content: string): string => `\n## ${heading}\n${content}\n`;
@@ -92,7 +82,7 @@ function audit(store: BrainStore, action: string, id: string, now: number): void
 
 export function createAdr(store: BrainStore, project: string, source: DocSource, session: string | null | undefined, input: AdrInput): Document {
   check(project, source);
-  const title = text(input.title, 'title', 1, TITLE_MAX);
+  const title = oneLine(input.title, 'title', 1, TITLE_MAX);
   const f: Record<string, string> = {};
   for (const name of ADR_FIELDS) f[name] = text(input[name], name, 1, FIELD_MAX);
   const raw: unknown = input.supersedes;
@@ -100,6 +90,8 @@ export function createAdr(store: BrainStore, project: string, source: DocSource,
   const { db, transaction } = store.connection;
   const id = transaction(() => {
     const old = raw === undefined ? null : find(store, project, raw, 'adr');
+    if (old && old.status === 'superseded') throw new Error(`${adrLabel(old.number!)} is already superseded by ${adrLabel(find(store, project, old.supersededBy!, 'adr').number!)}; supersede that one instead`);
+    if (old && old.status !== 'accepted') throw new Error(`only an accepted ADR can be superseded (${adrLabel(old.number!)} is ${old.status})`);
     const number = db.prepare("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM documents WHERE project = ? AND kind = 'adr'").get(project)!.n as number;
     const now = Date.now();
     const body = renderAdr(number, title, 'proposed', now, f, old ? adrLabel(old.number!) : null);
@@ -122,7 +114,7 @@ function settle(store: BrainStore, project: string, ref: string, to: 'accepted' 
     const now = Date.now();
     const fields = note === undefined ? doc.fields : { ...doc.fields, reviewNote: text(note, 'note', 0, 2000) };
     const old = to === 'accepted' && doc.supersedes ? find(store, project, doc.supersedes, 'adr') : null;
-    if (old && old.status !== 'accepted' && old.status !== 'proposed') throw new Error(`cannot supersede a ${old.status} ADR`);
+    if (old && old.status !== 'accepted') throw new Error(`cannot supersede a ${old.status} ADR`);
     const update = db.prepare('UPDATE documents SET status = ?, body = ?, fields = ?, superseded_by = ?, updated_at = ? WHERE id = ?');
     const back = (d: Document, status: string, by: string | null, f: unknown): void => {
       const body = renderAdr(d.number!, d.title, status, d.createdAt, d.fields as Record<string, string>,
@@ -137,28 +129,29 @@ function settle(store: BrainStore, project: string, ref: string, to: 'accepted' 
 export function acceptAdr(store: BrainStore, project: string, ref: string): void { settle(store, project, ref, 'accepted'); }
 export function rejectAdr(store: BrainStore, project: string, ref: string, note?: string): void { settle(store, project, ref, 'rejected', note); }
 
-export function createRecipe(store: BrainStore, project: string, source: DocSource, session: string | null | undefined, input: RecipeInput): Document {
+export function createRecipe(store: BrainStore, project: string, source: DocSource, session: string | null | undefined, input: RecipeInput): Document & { created: boolean } {
   check(project, source);
-  const goal = text(input.goal, 'goal', 1, TITLE_MAX);
+  const goal = oneLine(input.goal, 'goal', 1, TITLE_MAX);
   const rawPrompts: unknown = input.prompts;
   if (!Array.isArray(rawPrompts) || rawPrompts.length > MAX_PROMPTS || (rawPrompts as unknown[]).some(p => typeof p !== 'string' || p.length > PROMPT_MAX))
     throw new Error('invalid prompts');
   if ((rawPrompts as string[]).reduce((sum, p) => sum + p.length, 0) > PROMPTS_TOTAL) throw new Error('invalid prompts');
-  const f: RecipeInput = { goal, plan: text(input.plan, 'plan', 1, FIELD_MAX), prompts: (rawPrompts as string[]).map(redact),
+  const f: RecipeInput = { goal, plan: text(input.plan, 'plan', 1, FIELD_MAX), prompts: (rawPrompts as string[]).map(redactSecrets),
     deadEnds: list(input.deadEnds, 'deadEnds', 50, 1000), verification: text(input.verification, 'verification', 1, FIELD_MAX),
     outcome: text(input.outcome, 'outcome', 1, FIELD_MAX), files: list(input.files, 'files', 200, 1024) };
   const id = sha([project, 'recipe', goal, session ?? '']);
   const { db, transaction } = store.connection;
-  transaction(() => {
-    if (db.prepare('SELECT 1 FROM documents WHERE id = ?').get(id)) return;
+  const created = transaction(() => {
+    if (db.prepare('SELECT 1 FROM documents WHERE id = ?').get(id)) return false;
     const now = Date.now();
     const body = renderRecipe(goal, now, f);
     if (body.length > BODY_MAX) throw new Error('invalid body');
     db.prepare("INSERT INTO documents VALUES (?, ?, 'recipe', NULL, ?, 'recorded', ?, ?, NULL, NULL, ?, ?, ?, ?)")
       .run(id, project, goal, body, JSON.stringify(f), source, session ?? null, now, now);
     audit(store, 'doc-create', id, now);
+    return true;
   });
-  return find(store, project, id);
+  return { ...find(store, project, id), created };
 }
 
 export function listDocuments(store: BrainStore, project: string, kind?: DocKind, status?: DocStatus): Omit<Document, 'body' | 'fields'>[] {

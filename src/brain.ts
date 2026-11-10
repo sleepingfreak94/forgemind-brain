@@ -31,17 +31,17 @@ const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern']
 const statuses: readonly string[] = ['proposed', 'approved', 'rejected', 'retired'];
 /** The generic key/token/secret/password pattern also refuses harmless text such as "token: use refresh flow"; that is intended. */
 const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bsk-[A-Za-z0-9_-]{16,}/, /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)\s*[:=]/i];
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)["']?\s*[:=]/i];
 
 /** Local owner state; never a directory under the repository. */
 export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
 const secretSpans = secrets.map(pattern => new RegExp(pattern.source, pattern.flags + 'g'));
-/** Replace only the secret spans with [redacted]; the generic keyword pattern also takes the value up to whitespace. */
+/** Replace only the secret spans with [redacted]; the generic keyword pattern also takes the rest of the line (multi-word values). */
 export function redactSecrets(text: string): string {
   let out = String(text);
   for (const pattern of secretSpans) {
-    const source = pattern.source.startsWith('(key|token') ? pattern.source + '[ \\t]*[^\\s]*' : pattern.source;
+    const source = pattern.source.startsWith('(key|token') ? pattern.source + '[^\\r\\n]*' : pattern.source;
     out = out.replace(new RegExp(source, pattern.flags), '[redacted]');
   }
   return out;

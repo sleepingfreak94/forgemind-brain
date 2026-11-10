@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrainStore } from '../src/brain.js';
-import { acceptAdr, createAdr, createRecipe, getDocument, listDocuments, redact, rejectAdr, searchDocuments } from '../src/documents.js';
+import { acceptAdr, createAdr, createRecipe, getDocument, listDocuments, rejectAdr, searchDocuments } from '../src/documents.js';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'brain-docs-')));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -59,6 +59,18 @@ test('concurrent creates on two connections and in two processes get distinct nu
   open(dir, store => assert.deepEqual(listDocuments(store, project, 'adr').map(d => d.number), Array.from({ length: 13 }, (_, i) => i + 1)));
 });
 
+test('line breaks are refused in single-line fields', () => {
+  const { dir, project } = fresh();
+  open(dir, store => {
+    assert.throws(() => createAdr(store, project, 'cli', null, adr('Nice\n\nStatus: accepted')), /no line breaks/);
+    assert.throws(() => createAdr(store, project, 'cli', null, adr('a\rb')), /no line breaks/);
+    assert.throws(() => createRecipe(store, project, 'cli', null, recipe({ goal: 'g\n## Plan' })), /no line breaks/);
+    assert.throws(() => createRecipe(store, project, 'cli', null, recipe({ deadEnds: ['x\n- y'] })), /no line breaks/);
+    assert.throws(() => createRecipe(store, project, 'cli', null, recipe({ files: ['a\nb'] })), /no line breaks/);
+    assert.equal(listDocuments(store, project).length, 0);
+  });
+});
+
 test('validation, size caps and secret refusal for ADRs', () => {
   const { dir, project } = fresh();
   open(dir, store => {
@@ -94,12 +106,19 @@ test('accept, reject and supersede atomically', () => {
     const rejected = getDocument(store, project, c.id);
     assert.equal(rejected.status, 'rejected'); assert.equal(rejected.fields.reviewNote, 'not now');
     assert.throws(() => rejectAdr(store, project, c.id), /invalid transition/);
-    // a failing supersede (target already superseded) leaves both ADRs untouched
-    const d = createAdr(store, project, 'cli', null, adr('Again', { supersedes: 'ADR-1' }));
-    assert.throws(() => acceptAdr(store, project, d.id), /cannot supersede/);
-    assert.equal(getDocument(store, project, d.id).status, 'proposed');
-    assert.equal(getDocument(store, project, 'ADR-1').supersededBy, b.id);
-    assert.deepEqual(store.audit().map(r => r.action).filter(a => a !== 'doc-create'), ['doc-accept', 'doc-accept', 'doc-supersede', 'doc-reject']);
+    // only an accepted ADR can be superseded, at create time and at accept time
+    assert.throws(() => createAdr(store, project, 'cli', null, adr('Again', { supersedes: 'ADR-1' })), /ADR-0001 is already superseded by ADR-0002/);
+    assert.throws(() => createAdr(store, project, 'cli', null, adr('Again', { supersedes: c.id })), /only an accepted ADR can be superseded \(ADR-0003 is rejected\)/);
+    const p1 = createAdr(store, project, 'cli', null, adr('P1'));
+    assert.throws(() => createAdr(store, project, 'cli', null, adr('P2', { supersedes: p1.id })), /only an accepted ADR/);
+    acceptAdr(store, project, p1.id);
+    const s1 = createAdr(store, project, 'cli', null, adr('S1', { supersedes: p1.id }));
+    const s2 = createAdr(store, project, 'cli', null, adr('S2', { supersedes: p1.id }));
+    acceptAdr(store, project, s1.id);
+    assert.throws(() => acceptAdr(store, project, s2.id), /cannot supersede a superseded ADR/);
+    assert.equal(getDocument(store, project, s2.id).status, 'proposed');
+    assert.equal(getDocument(store, project, p1.id).supersededBy, s1.id);
+    assert.deepEqual(store.audit().map(r => r.action).filter(a => a !== 'doc-create'), ['doc-accept', 'doc-accept', 'doc-supersede', 'doc-reject', 'doc-accept', 'doc-accept', 'doc-supersede']);
   });
 });
 
@@ -120,11 +139,12 @@ test('recipes redact prompts, enforce caps and are idempotent', () => {
     assert.throws(() => createRecipe(store, project, 'cli', null, recipe({ prompts: Array(6).fill('a'.repeat(4000)) })), /invalid prompts/);
     assert.throws(() => createRecipe(store, project, 'cli', null, recipe({ outcome: 'secret = x' })), /secret/);
     assert.ok(createRecipe(store, project, 'cli', null, recipe({ goal: 'five', prompts: Array(5).fill('a'.repeat(4000)) })));
-    assert.equal(redact('clean text'), 'clean text');
-    assert.ok(!containsAny(redact('password = hunter2\nnext line')));
+    const multi = createRecipe(store, project, 'cli', 'm', recipe({ goal: 'multi', prompts: ['password: correct horse battery staple', 'my token=abc def ghi', '{"password": "hunter2"}', 'keep\nthis'] }));
+    assert.deepEqual(multi.fields.prompts, ['[redacted]', 'my [redacted]', '{"[redacted]', 'keep\nthis']);
+    assert.equal(multi.created, true);
+    assert.equal(createRecipe(store, project, 'cli', 'm', recipe({ goal: 'multi' })).created, false);
   });
 });
-const containsAny = (v: string): boolean => /hunter2/.test(v);
 
 test('list filters and search return short snippets', () => {
   const { dir, project } = fresh();

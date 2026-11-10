@@ -218,7 +218,7 @@ test('secrets straddling a cap are redacted before cutting; harmless text surviv
   const h = history()[0]!;
   assert.ok(!JSON.stringify(h).includes('AAAAAA'));
   assert.equal(h.prompts![0]!.length, 4000);
-  assert.equal(h.prompts![1], 'fix the auth [redacted] flow\nline two\n[redacted] ok');
+  assert.equal(h.prompts![1], 'fix the auth [redacted]\nline two\n[redacted]');
   const t2 = transcript([{ type: 'user', message: { role: 'user', content: 'x'.repeat(150) + ' ghp_' + 'B'.repeat(30) } }]);
   await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t2 }), opts());
   assert.ok(!history()[0]!.title.includes('BBBB'));

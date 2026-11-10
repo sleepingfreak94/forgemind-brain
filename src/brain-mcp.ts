@@ -9,7 +9,7 @@ import type { BrainEntry, BrainHistory, BrainKind, BrainSource } from './brain.j
 
 type ClientSource = (typeof clientSources)[number];
 
-export interface BrainMcpContext { brainDirectory: string; workspace: string; source: ClientSource; now?: (() => Date) | undefined }
+export interface BrainMcpContext { brainDirectory: string; workspace: string; source: ClientSource; session?: string | undefined; now?: (() => Date) | undefined }
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_LINE = 1048576;
@@ -17,10 +17,10 @@ const CONTEXT_CAP = 3200;
 const SEARCH_ITEM_CAP = 400;
 const SEARCH_CAP = 2000;
 const HISTORY_IN_CONTEXT = 5;
-const INSTRUCTIONS = 'Call brain_context first. If the project has no accepted or proposed ADRs and the work starts a project or makes a '
-  + 'significant choice, write brain_adr (ADR-0001 covers the goals and the stack); every significant decision gets an ADR. After reading '
-  + 'tickets, chats, email or docs (Jira, Slack, Teams, Outlook, Confluence), call brain_record with a short summary of the decisions, '
-  + 'outcomes and IDs/links; never paste raw message content. At the end of every task, call brain_recipe with the plan, the exact '
+const INSTRUCTIONS = 'Call brain_context first. If the project has no accepted or proposed ADRs, or the work makes a significant choice, '
+  + 'write brain_adr (ADR-0001 covers the goals and the stack). After reading tickets, chats, email or docs (Jira, Slack, Teams, '
+  + 'Outlook, Confluence), call brain_record with a short summary of the decisions, outcomes and IDs/links; never paste raw message '
+  + 'content. Before finishing a task, call brain_record with what worked and what failed, and brain_recipe with the plan, the exact '
   + 'prompts the user gave, the dead ends, how it was verified and the outcome. Attach screenshots from bug bashes or UI checks with '
   + 'brain_record attachments (absolute file paths). Propose durable lessons with brain_propose.';
 const KINDS = ['convention', 'lesson', 'decision', 'pattern'];
@@ -154,7 +154,7 @@ function runTool(name: string, args: Record<string, unknown>, store: BrainStore,
       evidence: ['mcp:' + context.source] });
     return `${id} proposed; the owner must approve it`;
   }
-  const doc = runDocTool(name, args, store, project, context.source, (context.now ?? (() => new Date()))().toISOString().slice(0, 10));
+  const doc = runDocTool(name, args, store, project, context.source, context.session ?? (context.now ?? (() => new Date()))().toISOString().slice(0, 10));
   if (doc !== undefined) return doc;
   const title = str(args, 'title'), summary = str(args, 'summary'), outcome = str(args, 'outcome');
   const rawFiles = args.files === undefined ? [] : args.files;
