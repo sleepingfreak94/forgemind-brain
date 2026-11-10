@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrainStore } from '../src/brain.js';
+import { contextText } from '../src/brain-mcp.js';
 import { cleanPrompt, runBrainHook, runBrainHookDetailed } from '../src/brain-hook.js';
 
 const LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
@@ -56,8 +57,8 @@ test('a second project shares the brain file but not its history', async () => {
   assert.ok(!text.includes('Use tabs never'));
   const t = transcript([{ type: 'user', message: { role: 'user', content: 'Unmapped prompt' } }]);
   await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: other, transcript_path: t }), opts(['a.ts']));
-  assert.ok(history(other).some(x => x.title === 'Session (auto): Unmapped prompt'));
-  assert.ok(!history(ws).some(x => x.title === 'Session (auto): Unmapped prompt'));
+  assert.ok(history(other).some(x => x.title === 'Unmapped prompt'));
+  assert.ok(!history(ws).some(x => x.title === 'Unmapped prompt'));
 });
 
 test('claude session-end records from transcript', async () => {
@@ -66,16 +67,19 @@ test('claude session-end records from transcript', async () => {
     { type: 'user', message: { role: 'user', content: 'later prompt' } }]);
   const id = sid();
   assert.equal(await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: id, cwd: ws, transcript_path: t }), opts(['a.ts', 'b/c.ts'])), '');
-  const h = history().find(x => x.title === 'Session (auto): Fix the bug')!;
+  const h = history().find(x => x.title === 'Fix the bug')!;
   assert.ok(h);
-  assert.equal(h.summary, 'Auto-captured at session end. Files changed: 2.');
+  assert.equal(h.summary, '2 prompts, 0 corrections, 2 files changed');
+  assert.deepEqual(h.prompts, ['Fix the bug', 'later prompt']);
+  assert.equal(h.signals?.prompts, 2);
+  assert.deepEqual(h.evidence, ['hook:claude-code']);
   assert.deepEqual(h.files, ['a.ts', 'b/c.ts']);
   assert.equal(h.outcome, 'session ended');
   assert.equal(h.source, 'claude-code');
   const t2 = transcript([{ type: 'user', message: { role: 'user', content: long } }]);
   await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t2 }), opts());
-  const l = history().find(x => x.title.startsWith('Session (auto): xxx'))!;
-  assert.ok(l.title.length - 'Session (auto): '.length <= 160);
+  const l = history().find(x => x.title.startsWith('xxx'))!;
+  assert.ok(l.title.length <= 160);
 });
 
 const WRAPPED = '<timestamp>Saturday, Oct 24, 2026, 11:11 PM (UTC+5:30)</timestamp>\n<user_query>\nAnswer in 4 short lines...\n</user_query>';
@@ -89,7 +93,7 @@ test('cleanPrompt', () => {
 
 test('cursor session-end with null transcript records nothing; wrapped prompt dedups', async () => {
   const before = history().length;
-  await runBrainHook(['session-end', '--source', 'cursor'], JSON.stringify({ conversation_id: 'nul', workspace_roots: [ws], transcript_path: null }), opts(['z.ts']));
+  await runBrainHook(['session-end', '--source', 'cursor'], JSON.stringify({ conversation_id: 'nul', workspace_roots: [ws], transcript_path: null }), opts());
   assert.equal(history().length, before);
   const t = transcript([{ role: 'user', content: [{ type: 'text', text: WRAPPED }] }]);
   const input = JSON.stringify({ conversation_id: 'dup', workspace_roots: [ws], transcript_path: t });
@@ -98,14 +102,43 @@ test('cursor session-end with null transcript records nothing; wrapped prompt de
   const h = history();
   assert.equal(h.length, before + 1);
   const e = h.find(x => x.source === 'cursor')!;
-  assert.equal(e.title, 'Session (auto): Answer in 4 short lines...');
+  assert.equal(e.title, 'Answer in 4 short lines...');
 });
 
-test('claude session without a user prompt records nothing even with files', async () => {
+test('a session without prompts but with changed files is recorded without prompts', async () => {
   const before = history().length;
   const t = transcript([{ type: 'summary', summary: 's' }]);
   assert.equal(await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts(['a.ts'])), '');
+  const h = history();
+  assert.equal(h.length, before + 1);
+  assert.equal(h[0]!.title, 'Session: 1 files changed');
+  assert.equal(h[0]!.prompts, null);
+});
+
+test('junk-only transcript with no files records nothing; real prompt after junk becomes the title', async () => {
+  const before = history().length;
+  const junk = { type: 'user', message: { role: 'user', content: '<local-command-caveat>Caveat: x</local-command-caveat>' } };
+  const t = transcript([junk, { type: 'user', message: { role: 'user', content: '<command-name>/clear</command-name>' } }]);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts());
   assert.equal(history().length, before);
+  const t2 = transcript([junk, { type: 'user', message: { role: 'user', content: 'Real   ask' } }, { type: 'assistant', message: { id: 'm1', role: 'assistant', model: 'claude-x', content: [] } }]);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t2 }), opts());
+  const h = history()[0]!;
+  assert.equal(h.title, 'Real ask');
+  assert.equal(h.summary, '1 prompts, 0 corrections, 0 files changed, model claude-x');
+});
+
+test('prompt caps keep the earliest and redact secrets', async () => {
+  const lines = Array.from({ length: 60 }, (_, i) => ({ type: 'user', message: { role: 'user', content: `p${i} ` + 'y'.repeat(5000) } }));
+  const t = transcript(lines);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts());
+  const h = history()[0]!;
+  assert.equal(h.prompts!.length, 5);
+  assert.ok(h.prompts!.every(p => p.length === 4000) && h.prompts![0]!.startsWith('p0 '));
+  assert.equal(h.signals!.prompts, 60);
+  const t2 = transcript([{ type: 'user', message: { role: 'user', content: 'ok one' } }, { type: 'user', message: { role: 'user', content: 'password: hunter2' } }]);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t2 }), opts());
+  assert.deepEqual(history()[0]!.prompts, ['ok one', '[redacted]']);
 });
 
 test('secrets become [redacted]', async () => {
@@ -140,8 +173,29 @@ test('codex is an accepted hook source and is recorded as codex', async () => {
   const start = await runBrainHook(['session-start', '--source', 'codex'], input, opts());
   assert.ok(JSON.parse(start).additional_context.startsWith('ForgeMind brain.'));
   assert.equal(await runBrainHook(['session-end', '--source', 'codex'], input, opts(['a.ts'])), '');
-  const row = history().find(x => x.title === 'Session (auto): Codex prompt');
+  const row = history().find(x => x.title === 'Codex prompt');
   assert.equal(row?.source, 'codex');
   const bad = await runBrainHookDetailed(['session-start', '--source', 'gemini'], input, opts());
   assert.match(bad.error ?? '', /unknown source/);
+});
+
+test('context ranks agent records first and hides auto-captures without real prompts', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'brain-ctx-')));
+  const project = join(dir, 'p'); mkdirSync(project);
+  const store = new BrainStore(join(dir, 'b'));
+  try {
+    const base = { project, source: 'claude-code' as const, summary: 's', files: [], outcome: 'done' };
+    store.record({ ...base, key: 'a1', title: 'Auto with prompts', evidence: ['hook:claude-code'], prompts: ['hello'] });
+    store.record({ ...base, key: 'a2', title: 'Auto without prompts', evidence: ['hook:claude-code'] });
+    store.record({ ...base, key: 'g1', title: 'Agent note', evidence: [] });
+    const text = contextText(store, project);
+    assert.ok(!text.includes('Auto without prompts'));
+    assert.ok(text.indexOf('Agent note') < text.indexOf('Auto with prompts'));
+    assert.ok(text.length <= 3200);
+    assert.throws(() => store.record({ ...base, key: 'k', title: 't', evidence: [], prompts: ['password: x'] }), /secret/);
+    assert.throws(() => store.record({ ...base, key: 'k', title: 't', evidence: [], prompts: Array(51).fill('a') }), /invalid prompts/);
+    assert.throws(() => store.record({ ...base, key: 'k', title: 't', evidence: [], prompts: ['a'.repeat(4001)] }), /invalid prompts/);
+    assert.throws(() => store.record({ ...base, key: 'k', title: 't', evidence: [], signals: { prompts: -1 } }), /invalid signals/);
+    assert.equal(store.history(project).find(h => h.title === 'Agent note')?.prompts, null);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

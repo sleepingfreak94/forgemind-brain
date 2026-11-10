@@ -19,6 +19,12 @@ export const clientSources = ['claude-code', 'cursor', 'codex'] as const;
 export interface BrainHistory {
   id: string; project: string; source: BrainSource; title: string; summary: string; files: string[];
   outcome: string; evidence: string[]; attachments: string[]; at: number;
+  /** Exact session prompts and measured signals (schema v5 contract); null on rows recorded before capture existed. */
+  prompts: string[] | null; signals: HistorySignals | null;
+}
+export interface HistorySignals {
+  prompts: number; corrections: number; correctionIndexes: number[]; model: string | null;
+  assistantTurns: number; toolErrors: number; durationMs: number | null;
 }
 const sources: readonly string[] = ['harness', ...clientSources];
 const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern'];
@@ -42,6 +48,22 @@ function limited(value: unknown, min: number, max: number, name: string): string
 function absolute(value: unknown): string {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('project must be an absolute path');
   return value;
+}
+function promptList(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 50) throw new Error('invalid prompts');
+  const list = (value as unknown[]).map(item => limited(item, 1, 4000, 'prompts'));
+  if (list.reduce((n, item) => n + item.length, 0) > 20000) throw new Error('invalid prompts');
+  return list;
+}
+function signalRecord(value: unknown): HistorySignals | null {
+  if (value === undefined || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const count = (x: unknown): number => { if (!Number.isInteger(x) || (x as number) < 0 || (x as number) > 1e9) throw new Error('invalid signals'); return x as number; };
+  if (typeof value !== 'object' || Array.isArray(value) || !Array.isArray(v.correctionIndexes) || v.correctionIndexes.length > 50) throw new Error('invalid signals');
+  const model = v.model === null ? null : limited(v.model, 1, 100, 'signals');
+  return { prompts: count(v.prompts), corrections: count(v.corrections), correctionIndexes: v.correctionIndexes.map(count), model,
+    assistantTurns: count(v.assistantTurns), toolErrors: count(v.toolErrors), durationMs: v.durationMs === null ? null : count(v.durationMs) };
 }
 const order = 'ORDER BY created_at, id';
 /**
@@ -147,7 +169,7 @@ export class BrainStore {
     });
   }
   record(input: { project: string; source: BrainSource; key: string; title: string; summary: string; files: string[];
-    outcome: string; evidence: string[]; attachments?: unknown }): string {
+    outcome: string; evidence: string[]; attachments?: unknown; prompts?: unknown; signals?: unknown }): string {
     const rawSource: unknown = input.source, rawFiles: unknown = input.files, rawEvidence: unknown = input.evidence;
     if (typeof rawSource !== 'string' || !sources.includes(rawSource)) throw new Error('invalid source');
     const project = limited(absolute(input.project), 1, 4096, 'project');
@@ -159,6 +181,7 @@ export class BrainStore {
     const files = (rawFiles as unknown[]).map(item => limited(item, 0, 1024, 'files'));
     if (!Array.isArray(rawEvidence) || rawEvidence.length > 20) throw new Error('invalid evidence');
     const evidence = (rawEvidence as unknown[]).map(item => limited(item, 0, 300, 'evidence'));
+    const prompts = promptList(input.prompts), signals = signalRecord(input.signals);
     const id = createHash('sha256').update(JSON.stringify([rawSource, project, key])).digest('hex').slice(0, 16);
     return this.transaction(() => {
       if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) {
@@ -170,8 +193,9 @@ export class BrainStore {
       try { stored = copyAttachments(this.directory, project, id, sources); } finally { closeAttachments(sources); }
       try {
         const now = Date.now();
-        this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now, stored.length ? JSON.stringify(stored) : null);
+        this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments, prompts, signals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now, stored.length ? JSON.stringify(stored) : null,
+            prompts ? JSON.stringify(prompts) : null, signals ? JSON.stringify(signals) : null);
         this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run('record', id, now);
       } catch (error) { if (stored[0]) removeAttachments(dirname(stored[0])); throw error; }
       return id;
@@ -184,7 +208,9 @@ export class BrainStore {
       id: row.id as string, project: row.project as string, source: row.source as BrainSource, title: row.title as string,
       summary: row.summary as string, files: JSON.parse(row.files as string) as string[], outcome: row.outcome as string,
       evidence: JSON.parse(row.evidence as string) as string[], at: row.at as number,
-      attachments: row.attachments === null ? [] : JSON.parse(row.attachments as string) as string[]
+      attachments: row.attachments === null ? [] : JSON.parse(row.attachments as string) as string[],
+      prompts: row.prompts === null || row.prompts === undefined ? null : JSON.parse(row.prompts as string) as string[],
+      signals: row.signals === null || row.signals === undefined ? null : JSON.parse(row.signals as string) as HistorySignals
     }));
   }
   private rows(sql: string, params: string[]): BrainEntry[] {
