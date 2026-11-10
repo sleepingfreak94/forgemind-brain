@@ -15,13 +15,15 @@ const DAY = 86400000;
 
 // No tools and no MCP servers, so transcript text cannot trigger actions; sonnet is the current alias.
 export const claudeArgs = ['-p', '--output-format', 'json', '--model', 'sonnet', '--tools', '', '--strict-mcp-config', '--no-session-persistence'];
-export const defaultRunner: ModelRunner = prompt => {
-  const r = spawnSync('claude', claudeArgs, { input: prompt, encoding: 'utf8', timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
+export const makeRunner = (spawn: typeof spawnSync = spawnSync): ModelRunner => prompt => {
+  // FORGEMIND_BRAIN_HOOK=off keeps the user's brain hooks from recording this session (--bare would break OAuth login).
+  const r = spawn('claude', claudeArgs, { env: { ...process.env, FORGEMIND_BRAIN_HOOK: 'off' }, input: prompt, encoding: 'utf8', timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
   if (r.error || r.status !== 0) throw new Error(`model run failed: ${r.error?.message ?? r.stderr.slice(0, 200)}`);
   const body = JSON.parse(r.stdout) as { result?: unknown; is_error?: unknown };
   if (body.is_error || typeof body.result !== 'string') throw new Error('model run failed: bad envelope');
   return body.result;
 };
+export const defaultRunner: ModelRunner = makeRunner();
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v : '').slice(0, n);
 const json = <T>(v: unknown, fallback: T): T => { try { return typeof v === 'string' ? JSON.parse(v) as T : fallback; } catch { return fallback; } };
