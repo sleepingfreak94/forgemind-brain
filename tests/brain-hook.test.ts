@@ -270,4 +270,5 @@ test('a resumed capture without prompts keeps the earlier prompts, signals and t
   const h = history().find(x => x.title === 'keep me')!;
   assert.deepEqual(h.prompts, ['keep me']);
   assert.deepEqual(h.files, ['z.ts']);
+  assert.match(h.summary, /^1 prompts/);
 });

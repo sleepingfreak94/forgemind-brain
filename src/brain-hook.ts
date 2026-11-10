@@ -110,6 +110,8 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
 }
 
 export async function runBrainHookDetailed(argv: string[], input: string, options: BrainHookOptions = {}): Promise<{ stdout: string; error?: string }> {
+  // Set by `brain reflect` around its own claude call so that session is not recorded.
+  if (process.env.FORGEMIND_BRAIN_HOOK === 'off') return { stdout: '' };
   try { return { stdout: await runBrainHookCore(argv, input, options) }; }
   catch (error) {
     const message = error instanceof Error ? error.message : String(error);

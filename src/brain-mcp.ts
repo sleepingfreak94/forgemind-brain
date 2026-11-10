@@ -190,6 +190,8 @@ export function handleBrainMessage(message: unknown, context: BrainMcpContext): 
   if (method === 'ping') return ok({});
   if (method === 'tools/list') return ok({ tools: TOOLS });
   if (method !== 'tools/call') return fail(-32601, 'Method not found');
+  // Set around reflect's model calls: that session may read untrusted transcripts and must not touch the brain.
+  if (process.env.FORGEMIND_BRAIN_HOOK === 'off') return ok(toolResult('brain disabled for reflect runs', true));
   const name = params.name;
   if (typeof name !== 'string' || !TOOLS.some(t => t.name === name)) return fail(-32602, 'Unknown tool');
   const rawArgs = params.arguments ?? {};

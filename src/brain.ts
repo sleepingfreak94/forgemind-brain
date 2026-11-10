@@ -199,8 +199,8 @@ export class BrainStore {
         // A resumed session reports again under the same key; the later capture is the fuller one.
         // A resumed capture without prompts (e.g. only the transcript tail was read) keeps the earlier prompts, signals and title.
         const p = prompts ? JSON.stringify(prompts) : null, sg = signals ? JSON.stringify(signals) : null;
-        this.db.prepare('UPDATE history SET title = CASE WHEN ? IS NULL THEN title ELSE ? END, summary = ?, files = ?, prompts = COALESCE(?, prompts), signals = COALESCE(?, signals) WHERE id = ?')
-          .run(p, title, summary, JSON.stringify(files), p, sg, id);
+        this.db.prepare('UPDATE history SET title = CASE WHEN ? IS NULL THEN title ELSE ? END, summary = CASE WHEN ? IS NULL THEN summary ELSE ? END, files = ?, prompts = COALESCE(?, prompts), signals = COALESCE(?, signals) WHERE id = ?')
+          .run(p, title, p, summary, JSON.stringify(files), p, sg, id);
         return id;
       }
       if (existing) {
@@ -275,6 +275,23 @@ export class BrainStore {
       .map(row => ({ action: row.action as string, entry: row.entry as string, at: row.at as number }));
   }
   close(): void { if (this.db.isOpen) this.db.close(); }
+
+  /** Review many entries at once: every id is validated first and all change in one transaction, or none do. */
+  changeMany(ids: string[], to: 'approved' | 'rejected' | 'retired', note?: string): void {
+    const text = note === undefined ? null : limited(note, 0, 2000, 'note');
+    const action = to === 'approved' ? 'approve' : to === 'rejected' ? 'reject' : 'retire';
+    this.transaction(() => {
+      for (const id of new Set(ids)) {
+        const row = this.db.prepare('SELECT status FROM entries WHERE id = ?').get(id);
+        if (!row) throw new Error(`unknown brain entry ${id}`);
+        const from = row.status as string;
+        if (!(from === 'proposed' && to !== 'retired') && !(from === 'approved' && to === 'retired')) throw new Error(`invalid transition from ${from} to ${to} for ${id}`);
+        const now = Date.now();
+        this.db.prepare('UPDATE entries SET status = ?, reviewed_at = ?, review_note = ? WHERE id = ?').run(to, now, text, id);
+        this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run(action, id, now);
+      }
+    });
+  }
   /** The open connection and its write transaction, for documents.ts. */
   get connection(): { db: DatabaseSync; transaction: <T>(work: () => T) => T } {
     return { db: this.db, transaction: work => this.transaction(work) };
