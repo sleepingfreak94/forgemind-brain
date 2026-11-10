@@ -2,7 +2,7 @@ import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, rea
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { BrainSpace } from './brain.js';
-import { privatePath } from './database.js';
+import { privatePath } from './validation.js';
 
 type SpaceMap = Record<string, BrainSpace>;
 

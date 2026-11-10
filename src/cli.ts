@@ -2,11 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { BrainStore, defaultBrainDirectory } from '../memory/brain.js';
-import type { BrainEntry, BrainKind, BrainSpace, BrainStatus } from '../memory/brain.js';
-import { brainSpaceFor, mapBrainSpace } from '../memory/brain-spaces.js';
-import { learnFromGit, learnFromGitHub } from '../memory/brain-learn.js';
-import type { BrainProposal } from '../memory/brain-learn.js';
+import { BrainStore, defaultBrainDirectory } from './brain.js';
+import type { BrainEntry, BrainKind, BrainSpace, BrainStatus } from './brain.js';
+import { brainSpaceFor, mapBrainSpace } from './brain-spaces.js';
+import { learnFromGit, learnFromGitHub } from './brain-learn.js';
+import type { BrainProposal } from './brain-learn.js';
 
 class UsageError extends Error {}
 

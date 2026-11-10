@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { privatePath } from './database.js';
+import { privatePath } from './validation.js';
 
 export type BrainSpace = 'personal' | 'company';
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';

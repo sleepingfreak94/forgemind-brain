@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { BrainStore } from '../../src/memory/brain.js';
-import { mapBrainSpace } from '../../src/memory/brain-spaces.js';
-import { handleBrainMessage, resolveWorkspace, runBrainMcp } from '../../src/memory/brain-mcp.js';
+import { BrainStore } from '../src/brain.js';
+import { mapBrainSpace } from '../src/brain-spaces.js';
+import { handleBrainMessage, resolveWorkspace, runBrainMcp } from '../src/brain-mcp.js';
 
 interface Reply { result?: { content: { text: string }[]; isError: boolean; tools?: { name: string }[]; protocolVersion?: string;
   serverInfo?: { name: string } }; error?: { code: number; message: string } }

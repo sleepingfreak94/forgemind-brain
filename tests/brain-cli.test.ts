@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runBrainCli } from '../../src/local-runtime/brain-cli.js';
-import { BrainStore } from '../../src/memory/brain.js';
-import { brainSpaceFor, mapBrainSpace } from '../../src/memory/brain-spaces.js';
+import { runBrainCli } from '../src/cli.js';
+import { BrainStore } from '../src/brain.js';
+import { brainSpaceFor, mapBrainSpace } from '../src/brain-spaces.js';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'brain-cli-')));
 after(() => rmSync(root, { recursive: true, force: true }));

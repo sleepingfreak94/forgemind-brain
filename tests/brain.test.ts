@@ -4,7 +4,7 @@ import { chmodSync, existsSync, linkSync, mkdtempSync, realpathSync, renameSync,
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { BrainStore, defaultBrainDirectory } from '../../src/memory/brain.js';
+import { BrainStore, defaultBrainDirectory } from '../src/brain.js';
 
 function withDir(run: (dir: string) => void): void {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'brain-')));

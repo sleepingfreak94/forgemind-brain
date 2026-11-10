@@ -75,7 +75,7 @@ const STOPWORDS = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 
   'under', 'report', 'reported', 'show', 'shown', 'new', 'make', 'made']);
 const terms = (value: string): Set<string> => new Set([...words(value)].filter(w => w.length >= 3 && !STOPWORDS.has(w)));
 
-// shortcut: lexical ranking, upgrade to src/memory/local-embedding.ts when memory grows past a few hundred items
+// shortcut: lexical ranking, upgrade to a local embedding module when memory grows past a few hundred items
 function rank(store: BrainStore, project: string, query: string, limit: number): string {
   const wanted = [...terms(query)];
   if (wanted.length === 0) return 'No matches.';

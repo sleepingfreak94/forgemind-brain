@@ -7,10 +7,10 @@
   "scripts": {
     "build": "tsc -p config/tsconfig.json",
     "typecheck": "tsc -p config/tsconfig.json --noEmit",
-    "test": "npm run build && node --test --test-timeout=60000 dist/tests/memory/*.test.js",
-    "brain": "npm run build && node dist/src/local-runtime/brain-cli.js",
-    "brain:mcp": "node dist/src/memory/brain-mcp.js",
-    "brain:hook": "node dist/src/memory/brain-hook.js"
+    "test": "npm run build && node --test --test-timeout=60000 dist/tests/*.test.js",
+    "brain": "npm run build && node dist/src/cli.js",
+    "brain:mcp": "node dist/src/brain-mcp.js",
+    "brain:hook": "node dist/src/brain-hook.js"
   },
   "engines": { "node": ">=26.7.0" },
   "devDependencies": { "@types/node": "26.6.4", "typescript": "7.0.2" },

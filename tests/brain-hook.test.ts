@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BrainStore } from '../../src/memory/brain.js';
-import { mapBrainSpace } from '../../src/memory/brain-spaces.js';
-import { cleanPrompt, runBrainHook } from '../../src/memory/brain-hook.js';
+import { BrainStore } from '../src/brain.js';
+import { mapBrainSpace } from '../src/brain-spaces.js';
+import { cleanPrompt, runBrainHook } from '../src/brain-hook.js';
 
 const LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
 const NOW = Date.parse('2026-10-24T10:00:00Z');
