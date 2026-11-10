@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -204,7 +204,7 @@ test('record validates limits and refuses secrets', () => withDir(dir => {
   s.close();
 }));
 
-test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex); version 4 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('version 1 and 2 databases migrate to 4 (history keeps rows, accepts codex); version 5 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
   const first = new BrainStore(dir);
   const id = first.propose(base); first.close();
   const file = join(dir, 'brain.sqlite');
@@ -226,7 +226,50 @@ test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex)
   assert.equal(up.list()[0]!.id, id);
   up.close();
   const check = new DatabaseSync(file);
-  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 3);
-  check.exec('PRAGMA user_version = 4'); check.close();
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
+  check.exec('PRAGMA user_version = 5'); check.close();
   assert.throws(() => new BrainStore(dir), /unsupported/);
+}));
+
+test('version 3 upgrades to 4 in place and keeps history rows', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  new BrainStore(dir).close();
+  const raw = new DatabaseSync(join(dir, 'brain.sqlite'));
+  raw.exec(`DROP TABLE history; CREATE TABLE history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
+    source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor','codex')), title TEXT NOT NULL,
+    summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+    INSERT INTO history VALUES ('old', '/repo/a', 'cursor', 'v3 row', '', '[]', 'done', '[]', 1); PRAGMA user_version = 3`);
+  raw.close();
+  const s = new BrainStore(dir);
+  assert.deepEqual(s.history('/repo/a').map(h => [h.title, h.attachments]), [['v3 row', []]]);
+  s.close();
+  const check = new DatabaseSync(join(dir, 'brain.sqlite'));
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
+  check.close();
+}));
+
+test('attachments are validated first, copied privately, stored on the row and never copied twice', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  const src = join(dir, 'src'); mkdirSync(src);
+  const shot = join(src, 'Bug shot (1).png'); writeFileSync(shot, 'png-bytes');
+  const bad = join(src, 'notes.txt'); writeFileSync(bad, 'x');
+  const link = join(src, 'link.png'); symlinkSync(shot, link);
+  const dirPng = join(src, 'dir.png'); mkdirSync(dirPng);
+  const big = join(src, 'big.pdf'); writeFileSync(big, Buffer.alloc(10 * 1024 * 1024 + 1));
+  const s = new BrainStore(dir);
+  const rec = { ...run, key: 'att' };
+  for (const attachments of [[shot, bad], [shot, link], [shot, dirPng], [shot, big], [shot, join(src, 'missing.png')], ['rel.png'], Array(11).fill(shot), 'x'])
+    assert.throws(() => s.record({ ...rec, attachments }), /attachment/);
+  assert.equal(existsSync(join(dir, 'files')), false);
+  assert.equal(s.history('/repo/a').length, 0);
+  const id = s.record({ ...rec, attachments: [shot, shot] });
+  const [first, second] = s.history('/repo/a')[0]!.attachments;
+  assert.match(first!, new RegExp(`/files/[0-9a-f]{12}/${id}/1-Bug_shot__1_.png$`));
+  assert.match(second!, /\/2-Bug_shot__1_.png$/);
+  assert.equal(readFileSync(first!, 'utf8'), 'png-bytes');
+  assert.equal(statSync(first!).mode & 0o777, 0o600);
+  assert.equal(statSync(join(first!, '..')).mode & 0o777, 0o700);
+  writeFileSync(shot, 'changed');
+  assert.equal(s.record({ ...rec, attachments: [shot] }), id);
+  assert.deepEqual(readdirSync(join(first!, '..')).sort(), ['1-Bug_shot__1_.png', '2-Bug_shot__1_.png']);
+  assert.equal(readFileSync(first!, 'utf8'), 'png-bytes');
+  s.close();
 }));

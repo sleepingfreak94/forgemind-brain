@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { copyAttachments, removeAttachments, validateAttachments } from './attachments.js';
+import { dirname, isAbsolute, join } from 'node:path';
 import { privatePath } from './validation.js';
 
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';
@@ -17,7 +18,7 @@ export type BrainSource = 'harness' | 'claude-code' | 'cursor' | 'codex';
 export const clientSources = ['claude-code', 'cursor', 'codex'] as const;
 export interface BrainHistory {
   id: string; project: string; source: BrainSource; title: string; summary: string; files: string[];
-  outcome: string; evidence: string[]; at: number;
+  outcome: string; evidence: string[]; attachments: string[]; at: number;
 }
 const sources: readonly string[] = ['harness', ...clientSources];
 const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern'];
@@ -47,11 +48,13 @@ const order = 'ORDER BY created_at, id';
 /** Owner-only persistence of reviewed knowledge; one database file, `<directory>/brain.sqlite`. */
 export class BrainStore {
   private readonly db: DatabaseSync;
+  private readonly directory: string;
   constructor(directory: string) {
     if (typeof directory !== 'string' || !isAbsolute(directory)) throw new Error('brain storage must be absolute');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (realpathSync(directory) !== directory) throw new Error('brain storage must be canonical');
     privatePath(directory, true);
+    this.directory = directory;
     const path = join(directory, 'brain.sqlite');
     if (!existsSync(path) && existsSync(join(directory, 'brain', 'personal', 'brain.sqlite')))
       throw new Error('legacy brain found; run `npm run brain -- migrate` after switching all configs');
@@ -68,7 +71,7 @@ export class BrainStore {
       this.transaction(() => {
         // Read the version under the write lock so two opens cannot both run the upgrade.
         const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-        if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('unsupported brain schema');
+        if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error('unsupported brain schema');
         // Version 2 history only allows three sources; rebuild it so 'codex' fits.
         if (version === 2) this.db.exec('ALTER TABLE history RENAME TO history_v2');
         this.db.exec(`
@@ -80,10 +83,13 @@ export class BrainStore {
           CREATE TABLE IF NOT EXISTS audit (sequence INTEGER PRIMARY KEY, action TEXT NOT NULL, entry TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
           CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
             source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor','codex')), title TEXT NOT NULL,
-            summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+            summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL, attachments TEXT) STRICT;
         `);
-        if (version === 2) this.db.exec('INSERT INTO history SELECT * FROM history_v2; DROP TABLE history_v2');
-        if (version !== 3) this.db.exec('PRAGMA user_version = 3');
+        // Version 4 adds the nullable attachments column (older tables were created or kept without it).
+        if (!this.db.prepare('PRAGMA table_info(history)').all().some(column => column.name === 'attachments'))
+          this.db.exec('ALTER TABLE history ADD COLUMN attachments TEXT');
+        if (version === 2) this.db.exec('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at) SELECT * FROM history_v2; DROP TABLE history_v2');
+        if (version !== 4) this.db.exec('PRAGMA user_version = 4');
       });
     } catch (error) { this.db.close(); throw error; }
   }
@@ -112,7 +118,7 @@ export class BrainStore {
     });
   }
   record(input: { project: string; source: BrainSource; key: string; title: string; summary: string; files: string[];
-    outcome: string; evidence: string[] }): string {
+    outcome: string; evidence: string[]; attachments?: unknown }): string {
     const rawSource: unknown = input.source, rawFiles: unknown = input.files, rawEvidence: unknown = input.evidence;
     if (typeof rawSource !== 'string' || !sources.includes(rawSource)) throw new Error('invalid source');
     const project = limited(absolute(input.project), 1, 4096, 'project');
@@ -126,11 +132,15 @@ export class BrainStore {
     const evidence = (rawEvidence as unknown[]).map(item => limited(item, 0, 300, 'evidence'));
     const id = createHash('sha256').update(JSON.stringify([rawSource, project, key])).digest('hex').slice(0, 16);
     return this.transaction(() => {
-      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) return id;
-      const now = Date.now();
-      this.db.prepare('INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now);
-      this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run('record', id, now);
+      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) return id; // a repeat never copies files again
+      const sources = validateAttachments(input.attachments);
+      const stored = copyAttachments(this.directory, project, id, sources);
+      try {
+        const now = Date.now();
+        this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now, stored.length ? JSON.stringify(stored) : null);
+        this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run('record', id, now);
+      } catch (error) { if (stored[0]) removeAttachments(dirname(stored[0])); throw error; }
       return id;
     });
   }
@@ -140,7 +150,8 @@ export class BrainStore {
     return this.db.prepare('SELECT * FROM history WHERE project = ? ORDER BY at DESC, rowid DESC LIMIT ?').all(where, limit).map(row => ({
       id: row.id as string, project: row.project as string, source: row.source as BrainSource, title: row.title as string,
       summary: row.summary as string, files: JSON.parse(row.files as string) as string[], outcome: row.outcome as string,
-      evidence: JSON.parse(row.evidence as string) as string[], at: row.at as number
+      evidence: JSON.parse(row.evidence as string) as string[], at: row.at as number,
+      attachments: row.attachments === null ? [] : JSON.parse(row.attachments as string) as string[]
     }));
   }
   private rows(sql: string, params: string[]): BrainEntry[] {
