@@ -16,7 +16,8 @@ const ENTRY_BUDGET = 12000;
 const DAY = 86400000;
 
 export interface Filter { sources: string[]; projects?: string[] | undefined }
-export const defaultSources: string[] = [...clientSources];
+// codex is opt-in: its runner is untested.
+export const defaultSources: string[] = clientSources.filter(s => s !== 'codex');
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v : '').slice(0, n);
 const json = <T>(v: unknown, fallback: T): T => { try { return typeof v === 'string' ? JSON.parse(v) as T : fallback; } catch { return fallback; } };
@@ -55,13 +56,6 @@ export function buildPacket(directory: string, days: number, now = Date.now(), f
       items.push({ project: r.project as string, at: r.at as number, id: r.id as string, line: sessionLine(r) });
     for (const r of db.prepare(`SELECT * FROM documents WHERE kind = 'recipe' AND updated_at >= ? AND ${only} ORDER BY updated_at DESC`).all(since, ...args))
       items.push({ project: r.project as string, at: r.updated_at as number, id: r.id as string, line: recipeLine(r) });
-    const entryLines: string[] = [], entryIds: Packet['entryIds'] = new Map();
-    let used = 0;
-    for (const r of db.prepare("SELECT * FROM entries WHERE status IN ('approved','proposed') ORDER BY status, created_at DESC").all()) {
-      const line = JSON.stringify({ t: 'entry', id: r.id, status: r.status, kind: r.kind, project: r.project, text: clip(r.text, 300) });
-      if (used + line.length + 1 > ENTRY_BUDGET) break;
-      used += line.length + 1; entryLines.push(line); entryIds.set(r.id as string, { project: r.project as string | null, status: r.status as string });
-    }
     const queues = new Map<string, typeof items>();
     for (const item of items.sort((a, b) => b.at - a.at)) queues.set(item.project, [...(queues.get(item.project) ?? []), item]);
     let budget = PACKET_LIMIT - ENTRY_BUDGET - 200;
@@ -76,6 +70,15 @@ export function buildPacket(directory: string, days: number, now = Date.now(), f
         if (item.line.length + 1 > budget) { queue.length = 0; continue; }
         budget -= item.line.length + 1; lines.push(item.line); ids.add(item.id); projects.add(item.project);
       }
+    }
+    // Entries of a project that is not in this packet stay out, so one source never learns another source's projects.
+    const entryLines: string[] = [], entryIds: Packet['entryIds'] = new Map();
+    let used = 0;
+    for (const r of db.prepare("SELECT * FROM entries WHERE status IN ('approved','proposed') ORDER BY status, created_at DESC").all()) {
+      if (r.project !== null && !projects.has(r.project as string)) continue;
+      const line = JSON.stringify({ t: 'entry', id: r.id, status: r.status, kind: r.kind, project: r.project, text: clip(r.text, 300) });
+      if (used + line.length + 1 > ENTRY_BUDGET) break;
+      used += line.length + 1; entryLines.push(line); entryIds.set(r.id as string, { project: r.project as string | null, status: r.status as string });
     }
     const text = [`window: last ${days} days; ${lines.length} sessions/recipes`, ...lines, ...entryLines].join('\n');
     return { text, ids, entryIds, projects };
@@ -226,9 +229,11 @@ export function reflect(brainDir: string, options: ReflectOptions): Record<strin
     if (failure && !succeeded) throw failure;
     const q2 = (n: number) => String(n).padStart(2, '0');
     const path = join(dir, `${now.getFullYear()}-${q2(now.getMonth() + 1)}-${q2(now.getDate())}-${q2(now.getHours())}${q2(now.getMinutes())}.md`);
-    writeFileSync(path, reportMarkdown(results, entries, now), { mode: 0o600 });
-    chmodSync(path, 0o600);
-    return { report: path, proposed: results.flatMap(r => r.proposed.map(x => x.id)),
+    const proposed = results.flatMap(r => r.proposed.map(x => x.id));
+    let report: string | undefined, reportError: string | undefined;
+    try { writeFileSync(path, reportMarkdown(results, entries, now), { mode: 0o600 }); chmodSync(path, 0o600); report = path; }
+    catch (error) { reportError = (error as Error).message; } // the proposals are already stored; never lose their ids
+    return { ...(report ? { report } : { reportError, note: 'report not written; proposals above are stored as proposed' }), proposed,
       retire: results.reduce((n, r) => n + (r.parsed?.retire.length ?? 0), 0), duplicates: results.reduce((n, r) => n + (r.parsed?.duplicates.length ?? 0), 0),
       sources: results.map(r => ({ source: r.source, status: r.skipped ?? 'ok' })) };
   });

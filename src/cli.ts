@@ -71,7 +71,7 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   if (['approve', 'retire', 'reject'].includes(command) && ('id' in args) === ('ids' in args)) throw new UsageError('give exactly one of --id or --ids');
   if ('ids' in args && !/^[0-9a-f]{16}(,[0-9a-f]{16})*$/.test(args.ids!)) throw new UsageError('invalid --ids');
   if ('days' in args && (!/^\d+$/.test(args.days!) || Number(args.days) < 1 || Number(args.days) > 30)) throw new UsageError('invalid --days');
-  if ('sources' in args && !args.sources!.split(',').every(x => ['claude-code', 'cursor', 'codex', 'harness'].includes(x))) throw new UsageError('invalid --sources');
+  if ('sources' in args && !args.sources!.split(',').every(x => ['claude-code', 'cursor', 'codex'].includes(x))) throw new UsageError('invalid --sources');
   if ('projects' in args && !args.projects!.split(',').every(x => isAbsolute(x))) throw new UsageError('invalid --projects');
   if (command === 'schedule' && ['every', 'off', 'status'].filter(k => k in args).length !== 1) throw new UsageError('give exactly one of --every, --off or --status');
   if (command === 'history' && 'limit' in args && Number(args.limit) > 200) throw new UsageError('invalid --limit');

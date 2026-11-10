@@ -212,7 +212,8 @@ test('JSON extraction handles fences and prose with braces around the answer', (
 });
 
 test('retire and duplicate suggestions may only name approved entries', () => {
-  const { brain, ws } = setup();
+  const { brain, ws, db } = setup();
+  hist(db(), 'h1', ws, now.getTime() - 1);
   const s = new BrainStore(brain);
   const a = s.propose({ kind: 'lesson', text: 'a', evidence: [], reason: 'r', project: ws }); s.approve(a);
   const b = s.propose({ kind: 'lesson', text: 'b', evidence: [], reason: 'r', project: ws }); s.approve(b);

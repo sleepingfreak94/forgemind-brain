@@ -28,7 +28,7 @@ test('each source gets its own packet and its own runner call; no cross-source d
   row('claude01', 'claude-code', 'CLAUDE-SECRET'); row('cursor01', 'cursor', 'CURSOR-SECRET'); row('codex001', 'codex', 'CODEX-SECRET');
   new BrainStore(brain).propose({ kind: 'lesson', text: 'shared entry', evidence: [], reason: 'r' });
   const calls: { prompt: string; cwd: string }[] = [];
-  const r = reflect(brain, { days: 2, now, run: (prompt, cwd) => { calls.push({ prompt, cwd }); return ok; } });
+  const r = reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor', 'codex'] }, run: (prompt, cwd) => { calls.push({ prompt, cwd }); return ok; } });
   assert.equal(calls.length, 3);
   for (const [i, own] of ['CLAUDE', 'CURSOR', 'CODEX'].entries()) {
     for (const other of ['CLAUDE', 'CURSOR', 'CODEX']) assert.equal(calls[i]!.prompt.includes(`${other}-SECRET`), other === own);
@@ -46,7 +46,7 @@ test('a source with no rows or no CLI is skipped with a note; the others still r
   const spawn = ((cmd: string) => { ran++; assert.equal(cmd, 'claude'); return { status: 0, stdout: JSON.stringify({ result: ok }), stderr: '' }; }) as any;
   const r = reflect(brain, { days: 2, now, spawn, has: c => c !== 'cursor-agent' });
   assert.equal(ran, 1);
-  assert.deepEqual(r.sources, [{ source: 'claude-code', status: 'ok' }, { source: 'cursor', status: '`cursor-agent` not found on PATH' }, { source: 'codex', status: 'no sessions or recipes in the window' }]);
+  assert.deepEqual(r.sources, [{ source: 'claude-code', status: 'ok' }, { source: 'cursor', status: '`cursor-agent` not found on PATH' }]);
   assert.match(readFileSync(r.report as string, 'utf8'), /Skipped: `cursor-agent` not found on PATH/);
 });
 
@@ -65,7 +65,7 @@ test('proposals can only cite ids from their own source packet', () => {
   const answer = (id: string) => JSON.stringify({ summary: 's', proposals: [{ project: null, kind: 'lesson', text: `tip ${id}`, reason: 'r', evidence: [id] }] });
   const r = reflect(brain, { days: 2, now, run: prompt => answer(prompt.includes('claude01') ? 'cursor01' : 'cursor01') });
   assert.equal((r.proposed as string[]).length, 1); // cited by the cursor source only; the claude source's citation was dropped
-  assert.deepEqual((r.sources as any[]).map(s => s.status), ['ok', 'ok', 'no sessions or recipes in the window']);
+  assert.deepEqual((r.sources as any[]).map(s => s.status), ['ok', 'ok']);
 });
 
 test('runner args, cwd, env and parsing for cursor and codex (fake spawn)', () => {
@@ -75,9 +75,16 @@ test('runner args, cwd, env and parsing for cursor and codex (fake spawn)', () =
     const i = args.indexOf('--output-last-message'); if (i >= 0) writeFileSync(args[i + 1]!, 'LAST MESSAGE'); return { status: 0, stdout: out, stderr: '' }; }) as any;
   assert.equal(makeCursorRunner(spawn('{"type":"result","is_error":false,"result":"CURSOR ANSWER"}'))('PROMPT', join(dir, 'cur')), 'CURSOR ANSWER');
   assert.equal(seen.cmd, 'cursor-agent');
-  assert.deepEqual(seen.args, [...cursorArgs, 'PROMPT']);
+  const tmp = seen.o.cwd as string;
+  assert.deepEqual(seen.args, [...cursorArgs, '--workspace', tmp, 'PROMPT']);
+  assert.ok(tmp.startsWith(realpathSync(tmpdir())) && !tmp.includes('.forgemind'));
+  assert.equal(existsSync(tmp), false); // removed after the run
+  assert.ok(!seen.args.includes('--approve-mcps'));
+  const boom = (() => ({ status: 1, stdout: '', stderr: 'x' })) as any;
+  let used = '';
+  assert.throws(() => makeCursorRunner(((c: string, a: string[], o: any) => { used = o.cwd; return boom(); }) as any)('p', ''), /model run failed/);
+  assert.equal(existsSync(used), false);
   assert.deepEqual(cursorArgs.slice(0, 7), ['-p', '--output-format', 'json', '--mode', 'ask', '--sandbox', 'enabled']);
-  assert.equal(seen.o.cwd, join(dir, 'cur'));
   assert.equal(seen.o.env.FORGEMIND_BRAIN_HOOK, 'off');
   assert.equal(makeCodexRunner(spawn('stdout text'))('PROMPT', join(dir, 'cod')), 'LAST MESSAGE');
   assert.equal(seen.cmd, 'codex');
@@ -126,4 +133,38 @@ test('schedule passes --runner and --sources through', async () => {
   assert.ok(xml.includes(`<string>--sources</string><string>cursor,codex</string><string>--runner</string><string>cursor=${exe}</string><string>--runner</string><string>codex=${exe}</string>`));
   assert.equal(existsSync(join(root, 'agents')), true);
   void schedule;
+});
+
+test('a personal project entry stays out of another source packet; global entries go everywhere', () => {
+  const { brain, row } = setup();
+  row('claude01', 'claude-code', 'a');
+  const db = new DatabaseSync(join(brain, 'brain.sqlite'));
+  db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at) VALUES (?,?,?,?,?,?,?,?,?)').run('cursor01', '/office', 'cursor', 'b', 's', '[]', 'ok', '[]', now.getTime() - 1);
+  db.close();
+  const s = new BrainStore(brain);
+  s.propose({ kind: 'lesson', text: 'PERSONAL entry', evidence: [], reason: 'r', project: '/p' });
+  s.propose({ kind: 'lesson', text: 'OFFICE entry', evidence: [], reason: 'r', project: '/office' });
+  s.propose({ kind: 'lesson', text: 'GLOBAL entry', evidence: [], reason: 'r' }); s.close();
+  const prompts: Record<string, string> = {};
+  reflect(brain, { days: 2, now, run: prompt => { prompts[prompt.includes('cursor01') ? 'cursor' : 'claude'] = prompt; return ok; } });
+  assert.ok(!prompts.cursor!.includes('PERSONAL') && prompts.cursor!.includes('OFFICE') && prompts.cursor!.includes('GLOBAL'));
+  assert.ok(!prompts.claude!.includes('OFFICE') && prompts.claude!.includes('PERSONAL'));
+});
+
+test('codex is not in the default sources; a failed report write still returns the proposed ids', () => {
+  const { brain, row } = setup();
+  row('codex001', 'codex', 'c'); row('claude01', 'claude-code', 'a');
+  let calls = 0;
+  reflect(brain, { days: 2, now, run: () => { calls++; return ok; } });
+  assert.equal(calls, 1);
+  reflect(brain, { days: 2, now, filter: { sources: ['codex'] }, run: () => { calls++; return ok; } });
+  assert.equal(calls, 2);
+  const answer = JSON.stringify({ summary: 's', proposals: [{ project: null, kind: 'lesson', text: 'tip', reason: 'r', evidence: ['claude01'] }] });
+  const stamp = new Date('2026-11-12T10:00:00Z');
+  const p = (n: number) => String(n).padStart(2, '0');
+  mkdirSync(join(brain, 'reflect', `${stamp.getFullYear()}-${p(stamp.getMonth() + 1)}-${p(stamp.getDate())}-${p(stamp.getHours())}${p(stamp.getMinutes())}.md`), { recursive: true });
+  const r = reflect(brain, { days: 2, now: stamp, run: () => answer });
+  assert.equal(r.report, undefined);
+  assert.ok(typeof r.reportError === 'string');
+  assert.equal((r.proposed as string[]).length, 1);
 });

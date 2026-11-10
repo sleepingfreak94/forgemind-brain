@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 
 /** Takes the prompt and a working directory, returns the model's answer text. Injected in tests. */
@@ -37,9 +38,11 @@ export const makeRunner = (spawn: Spawn = spawnSync): ModelRunner => (prompt, cw
   if (body.is_error || typeof body.result !== 'string') throw new Error('model run failed: bad envelope');
   return body.result;
 };
-export const makeCursorRunner = (spawn: Spawn = spawnSync): ModelRunner => (prompt, cwd) => {
-  mkdirSync(cwd, { recursive: true, mode: 0o700 });
-  return resultText(finish(spawn('cursor-agent', [...cursorArgs, prompt], { cwd, env: env(), ...OPTIONS })));
+// The prompt is an argument (cursor-agent has no stdin option), so local users can see it in `ps` while it runs.
+export const makeCursorRunner = (spawn: Spawn = spawnSync): ModelRunner => prompt => {
+  const empty = mkdtempSync(join(realpathSync(tmpdir()), 'forgemind-cursor-'));
+  try { return resultText(finish(spawn('cursor-agent', [...cursorArgs, '--workspace', empty, prompt], { cwd: empty, env: env(), ...OPTIONS }))); }
+  finally { rmSync(empty, { recursive: true, force: true }); }
 };
 export const makeCodexRunner = (spawn: Spawn = spawnSync): ModelRunner => (prompt, cwd) => {
   mkdirSync(cwd, { recursive: true, mode: 0o700 });
