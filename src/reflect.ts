@@ -5,7 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { BrainStore, containsSecret } from './brain.js';
 import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
-import { markReflected } from './reflect-chat.js';
+import { markReflected, reflectDirectory } from './reflect-state.js';
+export { reflectDirectory } from './reflect-state.js';
 import { planFor } from './reflect-runners.js';
 import type { ModelRunner, Spawn } from './reflect-runners.js';
 
@@ -180,12 +181,6 @@ function withLock<T>(directory: string, work: () => T): T {
   try { fd = openSync(lock, 'wx', 0o600); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('another reflect run is in progress'); throw error; }
   try { return work(); } finally { closeSync(fd); rmSync(lock, { force: true }); }
-}
-export function reflectDirectory(brainDir: string): string {
-  const dir = join(brainDir, 'reflect');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
-  return dir;
 }
 export function lastReport(brainDir: string): { path: string; text: string } {
   const dir = reflectDirectory(brainDir);

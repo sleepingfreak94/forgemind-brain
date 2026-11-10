@@ -156,7 +156,7 @@ function runTool(name: string, args: Record<string, unknown>, store: BrainStore,
   if (name === 'brain_reflect_packet') {
     const days = args.days === undefined ? 2 : args.days;
     if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 30) throw new Error('invalid days');
-    return chatPacket(context.brainDirectory, context.source, days, (context.now ?? (() => new Date()))().getTime());
+    return chatPacket(context.brainDirectory, context.source, context.workspace, days, (context.now ?? (() => new Date()))().getTime());
   }
   if (name === 'brain_propose') {
     const id = store.propose({ kind: str(args, 'kind') as BrainKind, project, text: str(args, 'text'), reason: str(args, 'reason'),

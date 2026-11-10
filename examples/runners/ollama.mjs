@@ -2,14 +2,19 @@
 // Reflect runner: prompt on stdin -> local Ollama -> text on stdout. Model: OLLAMA_MODEL (default llama3.1).
 // Use: brain reflect --runner cursor=/abs/path/to/examples/runners/ollama.mjs
 import { stdin, stdout, env, exit } from 'node:process';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const MAX_OUT = 200000;
+let fileModel = '';
+if (!env.OLLAMA_MODEL) { try { fileModel = readFileSync(join(homedir(), '.forgemind', 'reflect', 'ollama-model'), 'utf8').trim(); } catch { /* optional */ } }
 let prompt = '';
 for await (const chunk of stdin) { prompt += chunk; if (prompt.length > 400000) { console.error('prompt too large'); exit(1); } }
 try {
   const res = await fetch('http://127.0.0.1:11434/api/generate', {
     method: 'POST', signal: AbortSignal.timeout(300000), headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: env.OLLAMA_MODEL || 'llama3.1', prompt, stream: false }),
+    body: JSON.stringify({ model: env.OLLAMA_MODEL || fileModel || 'llama3.1', prompt, stream: false }),
   });
   if (!res.ok) { console.error(`Ollama error ${res.status}`); exit(1); }
   const data = await res.json();
