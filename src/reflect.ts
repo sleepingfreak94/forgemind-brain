@@ -5,28 +5,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { BrainStore, containsSecret } from './brain.js';
 import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
+import { clientSources, planFor } from './reflect-runners.js';
+import type { ModelRunner, Spawn } from './reflect-runners.js';
 
-/** Takes the prompt, returns the model's answer text. Injected in tests. */
-export type ModelRunner = (prompt: string, cwd: string) => string;
+export type { ModelRunner } from './reflect-runners.js';
+export { claudeArgs, makeRunner } from './reflect-runners.js';
 export interface Packet { text: string; ids: Set<string>; entryIds: Map<string, { project: string | null; status: string }>; projects: Set<string> }
 export const PACKET_LIMIT = 60000;
 const ENTRY_BUDGET = 12000;
 const DAY = 86400000;
 
-// No tools and no MCP servers, so transcript text cannot trigger actions; sonnet is the current alias.
 export interface Filter { sources: string[]; projects?: string[] | undefined }
-export const defaultSources = ['claude-code'];
-// --safe-mode drops CLAUDE.md, skills, plugins, hooks, MCP and agents (auth still works); the rest are extra layers.
-export const claudeArgs = ['-p', '--output-format', 'json', '--model', 'sonnet', '--safe-mode', '--tools', '', '--strict-mcp-config', '--no-session-persistence'];
-export const makeRunner = (spawn: typeof spawnSync = spawnSync): ModelRunner => (prompt, cwd) => {
-  // FORGEMIND_BRAIN_HOOK=off keeps the user's brain hooks from recording this session (--bare would break OAuth login).
-  const r = spawn('claude', claudeArgs, { cwd, env: { ...process.env, FORGEMIND_BRAIN_HOOK: 'off' }, input: prompt, encoding: 'utf8', timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
-  if (r.error || r.status !== 0) throw new Error(`model run failed: ${r.error?.message ?? r.stderr.slice(0, 200)}`);
-  const body = JSON.parse(r.stdout) as { result?: unknown; is_error?: unknown };
-  if (body.is_error || typeof body.result !== 'string') throw new Error('model run failed: bad envelope');
-  return body.result;
-};
-export const defaultRunner: ModelRunner = makeRunner();
+export const defaultSources: string[] = [...clientSources];
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v : '').slice(0, n);
 const json = <T>(v: unknown, fallback: T): T => { try { return typeof v === 'string' ? JSON.parse(v) as T : fallback; } catch { return fallback; } };
@@ -141,25 +131,31 @@ export function parseAnswer(raw: string, packet: Packet): Parsed {
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 /** Model text becomes one quoted line: no headings, fences, lists or tables can be forged from it. */
 const quote = (v: string): string => JSON.stringify(v.replace(/\s+/g, ' ').replace(/`/g, '').replace(/^[\s#>\-|*]+/, '').trim());
-export function reportMarkdown(parsed: Parsed, proposed: { id: string; proposal: Proposal }[], entries: Map<string, { project: string | null }>, now: Date): string {
-  const lines = [`# Reflect report ${now.toISOString()}`, '', `Summary (model text): ${quote(parsed.summary)}`, '', '## Proposed (pending your approval)', ''];
-  if (!proposed.length) lines.push('Nothing proposed.');
-  for (const { id, proposal: p } of proposed) lines.push(`- \`${id}\` [${p.kind}] ${p.project ?? 'all projects'}: ${quote(p.text)}`, `  - reason: ${quote(p.reason)}`, `  - evidence: ${p.evidence.join(', ')}`);
-  lines.push('', '## Suggested retirements (not applied)', '');
-  if (!parsed.retire.length) lines.push('None.');
-  for (const r of parsed.retire) lines.push(`- \`${r.id}\`: ${quote(r.reason)}`);
-  lines.push('', '## Suggested merges (not applied)', '');
-  if (!parsed.duplicates.length) lines.push('None.');
-  for (const d of parsed.duplicates) lines.push(`- keep \`${d.keep}\`, drop ${d.drop.map(x => `\`${x}\``).join(', ')}: ${quote(d.reason)}`);
+export interface SourceResult { source: string; runner: string; untested?: boolean | undefined; skipped?: string; parsed?: Parsed; proposed: { id: string; proposal: Proposal }[] }
+export function reportMarkdown(results: SourceResult[], entries: Map<string, { project: string | null }>, now: Date): string {
+  const lines = [`# Reflect report ${now.toISOString()}`, '', 'Each source was reflected only by its own tool, under whatever account that tool is logged into.'];
+  for (const r of results) {
+    lines.push('', `## Source ${r.source}`, '', `Runner: ${r.runner}${r.untested ? ' (UNTESTED)' : ''}`);
+    if (r.skipped || !r.parsed) { lines.push('', `Skipped: ${r.skipped ?? 'no result'}`); continue; }
+    lines.push('', `Summary (model text): ${quote(r.parsed.summary)}`, '', '### Proposed (pending your approval)', '');
+    if (!r.proposed.length) lines.push('Nothing proposed.');
+    for (const { id, proposal: p } of r.proposed) lines.push(`- \`${id}\` [${p.kind}] ${p.project ?? 'all projects'}: ${quote(p.text)}`, `  - reason: ${quote(p.reason)}`, `  - evidence: ${p.evidence.join(', ')}`);
+    lines.push('', '### Suggested retirements (not applied)', '');
+    if (!r.parsed.retire.length) lines.push('None.');
+    for (const x of r.parsed.retire) lines.push(`- \`${x.id}\`: ${quote(x.reason)}`);
+    lines.push('', '### Suggested merges (not applied)', '');
+    if (!r.parsed.duplicates.length) lines.push('None.');
+    for (const d of r.parsed.duplicates) lines.push(`- keep \`${d.keep}\`, drop ${d.drop.map(x => `\`${x}\``).join(', ')}: ${quote(d.reason)}`);
+  }
   const by = (list: { id: string; project: string | null }[]) => {
     const m = new Map<string, string[]>();
     for (const { id, project } of list) m.set(project ?? '<project>', [...(m.get(project ?? '<project>') ?? []), id]);
     return m;
   };
   const cmds: string[] = [];
-  for (const [ws, ids] of by(proposed.map(({ id, proposal }) => ({ id, project: proposal.project }))))
+  for (const [ws, ids] of by(results.flatMap(r => r.proposed.map(({ id, proposal }) => ({ id, project: proposal.project })))))
     cmds.push(`npm run brain -- approve --workspace ${q(ws)} --ids ${ids.join(',')}`, `npm run brain -- reject --workspace ${q(ws)} --ids ${ids.join(',')} --note "not useful"`);
-  for (const [ws, ids] of by(parsed.retire.map(r => ({ id: r.id, project: entries.get(r.id)?.project ?? null }))))
+  for (const [ws, ids] of by(results.flatMap(r => (r.parsed?.retire ?? []).map(x => ({ id: x.id, project: entries.get(x.id)?.project ?? null })))))
     cmds.push(`npm run brain -- retire --workspace ${q(ws)} --ids ${ids.join(',')}`);
   lines.push('', '## Commands (review, then run what you agree with; `<project>` = a workspace that can see the entry)', '', '```', ...cmds, '```', '');
   return lines.join('\n');
@@ -193,25 +189,47 @@ export function lastReport(brainDir: string): { path: string; text: string } {
   return { path: join(dir, name), text: readFileSync(join(dir, name), 'utf8') };
 }
 
-export function reflect(brainDir: string, options: { days: number; filter?: Filter | undefined; dryRun?: boolean; run?: ModelRunner | undefined; now?: Date }): Record<string, unknown> {
+export interface ReflectOptions {
+  days: number; filter?: Filter | undefined; dryRun?: boolean; now?: Date;
+  /** Test override: used for every source instead of the tool's own CLI. */
+  run?: ModelRunner | undefined; custom?: Record<string, string> | undefined; spawn?: Spawn | undefined; has?: ((command: string) => boolean) | undefined;
+}
+/** One packet and one model call per source, so no source's data ever reaches another tool or account. */
+export function reflect(brainDir: string, options: ReflectOptions): Record<string, unknown> {
   const now = options.now ?? new Date();
-  const packet = buildPacket(brainDir, options.days, now.getTime(), options.filter);
-  const prompt = buildPrompt(packet.text);
-  if (options.dryRun) return { packetChars: packet.text.length, sessionsAndRecipes: packet.ids.size, prompt };
+  const filter = options.filter ?? { sources: defaultSources };
   const dir = reflectDirectory(brainDir);
+  const packets = filter.sources.map(source => ({ source, packet: buildPacket(brainDir, options.days, now.getTime(), { ...filter, sources: [source] }) }));
+  const plan = (source: string) => options.run ? { source, label: 'injected runner', run: options.run } : planFor(source, options.custom ?? {}, options.spawn, options.has);
+  if (options.dryRun) return { sources: packets.map(({ source, packet }) => ({ source, packetChars: packet.text.length, sessionsAndRecipes: packet.ids.size,
+    runner: plan(source).label, prompt: buildPrompt(packet.text) })) };
   return withLock(dir, () => {
-    const parsed = parseAnswer((options.run ?? defaultRunner)(prompt, dir), packet);
+    const results: SourceResult[] = [], entries = new Map<string, { project: string | null }>();
     const store = new BrainStore(brainDir);
-    const proposed: { id: string; proposal: Proposal }[] = [];
+    let failure: Error | undefined, succeeded = false;
     try {
-      for (const proposal of parsed.proposals) {
-        try { proposed.push({ id: store.propose({ ...proposal, reason: `reflect: ${proposal.reason}` }), proposal }); } catch { /* refused proposals are dropped */ }
+      for (const { source, packet } of packets) {
+        const p = plan(source);
+        const base = { source, runner: p.label, untested: p.untested, proposed: [] as SourceResult['proposed'] };
+        if (!packet.ids.size) { results.push({ ...base, skipped: 'no sessions or recipes in the window' }); continue; }
+        if (!p.run) { results.push({ ...base, skipped: p.skip ?? 'no runner' }); continue; }
+        try {
+          const parsed = parseAnswer(p.run(buildPrompt(packet.text), source === 'claude-code' ? dir : join(dir, `run-${source}`)), packet);
+          for (const [id, e] of packet.entryIds) entries.set(id, e);
+          for (const proposal of parsed.proposals) {
+            try { base.proposed.push({ id: store.propose({ ...proposal, reason: `reflect: ${proposal.reason}` }), proposal }); } catch { /* refused proposals are dropped */ }
+          }
+          results.push({ ...base, parsed }); succeeded = true;
+        } catch (error) { failure ??= error as Error; results.push({ ...base, skipped: `failed: ${(error as Error).message.slice(0, 200)}` }); }
       }
     } finally { store.close(); }
-    const p = (n: number) => String(n).padStart(2, '0');
-    const path = join(dir, `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.md`);
-    writeFileSync(path, reportMarkdown(parsed, proposed, packet.entryIds, now), { mode: 0o600 });
+    if (failure && !succeeded) throw failure;
+    const q2 = (n: number) => String(n).padStart(2, '0');
+    const path = join(dir, `${now.getFullYear()}-${q2(now.getMonth() + 1)}-${q2(now.getDate())}-${q2(now.getHours())}${q2(now.getMinutes())}.md`);
+    writeFileSync(path, reportMarkdown(results, entries, now), { mode: 0o600 });
     chmodSync(path, 0o600);
-    return { report: path, proposed: proposed.map(x => x.id), retire: parsed.retire.length, duplicates: parsed.duplicates.length };
+    return { report: path, proposed: results.flatMap(r => r.proposed.map(x => x.id)),
+      retire: results.reduce((n, r) => n + (r.parsed?.retire.length ?? 0), 0), duplicates: results.reduce((n, r) => n + (r.parsed?.duplicates.length ?? 0), 0),
+      sources: results.map(r => ({ source: r.source, status: r.skipped ?? 'ok' })) };
   });
 }

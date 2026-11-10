@@ -135,8 +135,8 @@ test('cli: dry-run shows prompt without the model, --last prints the report, bad
   hist(db(), 'h1', ws, Date.now() - 1000, {});
   const dry = cli(brain, ['reflect', '--dry-run'], () => { throw new Error('model must not run'); });
   assert.equal(dry.code, 0);
-  assert.match(dry.json.prompt, /PACKET-BEGIN/);
-  assert.ok(dry.json.packetChars > 0);
+  assert.match(dry.json.sources[0].prompt, /PACKET-BEGIN/);
+  assert.ok(dry.json.sources[0].packetChars > 0);
   assert.equal(cli(brain, ['reflect', '--last']).code, 1);
   assert.equal(cli(brain, ['reflect'], () => 'garbage').code, 1);
   assert.equal(cli(brain, ['reflect'], () => '{"summary":"quiet","proposals":[]}').code, 0);
@@ -155,7 +155,7 @@ test('the lock stops overlapping runs', () => {
   reflect(brain, { days: 2, run: () => '{"proposals":[]}', now });
 });
 
-test('sources default to claude-code only; --sources and --projects widen or narrow; entries stay', () => {
+test('--sources and --projects select per-source packets; entries stay', () => {
   const { brain, ws, db } = setup();
   const d = db(), t = now.getTime();
   hist(d, 'cc000001', ws, t - 1); hist(d, 'cc000002', '/other', t - 2);
@@ -165,7 +165,7 @@ test('sources default to claude-code only; --sources and --projects widen or nar
   d.close();
   const s = new BrainStore(brain); s.propose({ kind: 'lesson', text: 'kept', evidence: [], reason: 'r' }); s.close();
   const ids = (f?: { sources: string[]; projects?: string[] }) => [...buildPacket(brain, 2, t, f).ids].sort();
-  assert.deepEqual(ids(), ['cc000001']);
+  assert.deepEqual(ids({ sources: ['claude-code'] }), ['cc000001']);
   assert.deepEqual(ids({ sources: ['claude-code', 'cursor'] }), ['cc000001', 'cc000002', 'rc1']);
   assert.deepEqual(ids({ sources: ['claude-code', 'cursor'], projects: [ws] }), ['cc000001', 'rc1']);
   assert.match(buildPacket(brain, 2, t).text, /"kept"|kept/);
@@ -196,7 +196,8 @@ test('the claude runner uses safe mode, no tools or MCP, the given cwd and hooks
   assert.deepEqual(seen.args, claudeArgs);
   assert.equal(seen.o.cwd, '/work');
   let cwd = '';
-  const { brain } = setup();
+  const { brain, ws, db } = setup();
+  hist(db(), 'cwd00001', ws, now.getTime() - 1);
   reflect(brain, { days: 2, now, run: (_p, c) => { cwd = c; return '{"proposals":[]}'; } });
   assert.equal(cwd, join(brain, 'reflect'));
 });

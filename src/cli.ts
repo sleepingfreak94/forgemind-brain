@@ -8,7 +8,8 @@ import { MigrationRefused, migrateLegacy } from './migrate.js';
 import { learnFromGit, learnFromGitHub } from './brain-learn.js';
 import type { BrainProposal } from './brain-learn.js';
 import { defaultSources, lastReport, reflect } from './reflect.js';
-import type { ModelRunner } from './reflect.js';
+import type { ModelRunner, Spawn } from './reflect-runners.js';
+import { parseCustom } from './reflect-runners.js';
 import { schedule } from './schedule.js';
 import type { ScheduleDeps } from './schedule.js';
 
@@ -30,8 +31,8 @@ const commands: Record<string, { required: string[]; optional: string[]; bool?: 
   approve: { required: ['workspace'], optional: ['id', 'ids'] },
   retire: { required: ['workspace'], optional: ['id', 'ids'] },
   reject: { required: ['workspace'], optional: ['id', 'ids', 'note'] },
-  reflect: { required: [], optional: ['days', 'sources', 'projects'], bool: ['dry-run', 'last'] },
-  schedule: { required: [], optional: ['every', 'sources', 'projects'], bool: ['off', 'status'] },
+  reflect: { required: [], optional: ['days', 'sources', 'projects', 'runner'], bool: ['dry-run', 'last'] },
+  schedule: { required: [], optional: ['every', 'sources', 'projects', 'runner'], bool: ['off', 'status'] },
   learn: { required: ['workspace'], optional: ['source', 'limit'] },
   history: { required: ['workspace'], optional: ['limit'] }
 };
@@ -50,6 +51,7 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
     if (typeof flag !== 'string' || !flag.startsWith('--')) throw new UsageError('invalid arguments');
     const key = flag.slice(2);
     if (!allowed.includes(key)) throw new UsageError('unknown option');
+    if (key === 'runner' && key in args) { args[key] += '\n' + String(value); continue; }
     if (key in args) throw new UsageError('repeated option');
     if (spec.bool?.includes(key)) { args[key] = 'true'; i -= 1; continue; }
     if (typeof value !== 'string' || value === '' || value.startsWith('--')) throw new UsageError('missing option value');
@@ -71,7 +73,11 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   return { command, args };
 }
 
-export interface CliOptions { run?: CliRunner; model?: ModelRunner; schedule?: ScheduleDeps }
+export interface CliOptions { run?: CliRunner; model?: ModelRunner; schedule?: ScheduleDeps; reflect?: { spawn?: Spawn; has?: (command: string) => boolean } }
+
+function parseRunners(value: string | undefined): Record<string, string> {
+  try { return parseCustom(value); } catch (error) { throw new UsageError((error as Error).message); }
+}
 
 function execute(command: string, args: Record<string, string>, run: CliRunner, options: CliOptions = {}): unknown {
   const dir = resolve(args['brain-dir'] ?? defaultBrainDirectory());
@@ -79,10 +85,10 @@ function execute(command: string, args: Record<string, string>, run: CliRunner, 
     try { return { ok: true, ...migrateLegacy(dir) }; }
     catch (error) { throw error instanceof MigrationRefused ? new UsageError(error.message) : error; }
   }
-  if (command === 'schedule') return { ok: true, ...schedule(dir, { every: args.every, sources: args.sources, projects: args.projects, off: 'off' in args, status: 'status' in args }, options.schedule) };
+  if (command === 'schedule') return { ok: true, ...schedule(dir, { every: args.every, sources: args.sources, projects: args.projects, runners: parseRunners(args.runner) && args.runner?.split('\n'), off: 'off' in args, status: 'status' in args }, options.schedule) };
   if (command === 'reflect') {
     if ('last' in args) return { ok: true, ...lastReport(dir) };
-    return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model,
+    return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model, custom: parseRunners(args.runner), spawn: options.reflect?.spawn, has: options.reflect?.has,
       filter: { sources: args.sources ? args.sources.split(',') : defaultSources, projects: args.projects?.split(',') } }) };
   }
   let workspace: string;

@@ -32,7 +32,7 @@ export function plistContent(brainDir: string, seconds: number, extra: string[] 
 }
 
 /** Install (`every` like "48h"), remove (`off`) or report on the reflect LaunchAgent. */
-export function schedule(brainDir: string, opts: { every?: string | undefined; off?: boolean; status?: boolean; sources?: string | undefined; projects?: string | undefined }, deps: ScheduleDeps = {}): Record<string, unknown> {
+export function schedule(brainDir: string, opts: { every?: string | undefined; off?: boolean; status?: boolean; sources?: string | undefined; projects?: string | undefined; runners?: string[] | undefined }, deps: ScheduleDeps = {}): Record<string, unknown> {
   if ((deps.platform ?? process.platform) !== 'darwin') throw new Error('schedule needs macOS (launchd)');
   const plist = join(deps.plistDir ?? join(homedir(), 'Library', 'LaunchAgents'), `${LABEL}.plist`);
   const launchctl = deps.launchctl ?? defaultLaunchctl;
@@ -56,7 +56,7 @@ export function schedule(brainDir: string, opts: { every?: string | undefined; o
   mkdirSync(dirname(plist), { recursive: true });
   mkdirSync(join(brainDir, 'reflect'), { recursive: true, mode: 0o700 });
   quietly(['bootout', `${domain}/${LABEL}`]);
-  writeFileSync(plist, plistContent(brainDir, hours * 3600, [...(opts.sources ? ['--sources', opts.sources] : []), ...(opts.projects ? ['--projects', opts.projects] : [])]), { mode: 0o644 });
+  writeFileSync(plist, plistContent(brainDir, hours * 3600, [...(opts.sources ? ['--sources', opts.sources] : []), ...(opts.projects ? ['--projects', opts.projects] : []), ...(opts.runners ?? []).flatMap(r => ['--runner', r])]), { mode: 0o644 });
   try { launchctl(['bootstrap', domain, plist]); } catch (error) { rmSync(plist, { force: true }); throw error; }
   return { scheduled: true, everySeconds: hours * 3600, plist };
 }
