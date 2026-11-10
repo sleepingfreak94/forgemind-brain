@@ -2,13 +2,24 @@
 // Reflect runner: prompt on stdin -> local Ollama -> text on stdout. Model: OLLAMA_MODEL (default llama3.1).
 // Use: brain reflect --runner cursor=/abs/path/to/examples/runners/ollama.mjs
 import { stdin, stdout, env, exit } from 'node:process';
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const MAX_OUT = 200000;
+function readPrivate(file) {
+  // O_NOFOLLOW refuses symlinks; O_NONBLOCK stops a FIFO from hanging the open (the fstat check then refuses it).
+  let fd;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw new Error(`cannot open ${file} (symlinks are refused): ${error.code}`); }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077) !== 0) throw new Error(`${file} must be a regular file you own with mode 0600 or stricter`);
+    return readFileSync(fd, 'utf8').trim();
+  } finally { closeSync(fd); }
+}
 let fileModel = '';
-if (!env.OLLAMA_MODEL) { try { fileModel = readFileSync(join(homedir(), '.forgemind', 'reflect', 'ollama-model'), 'utf8').trim(); } catch { /* optional */ } }
+if (!env.OLLAMA_MODEL) { try { fileModel = readPrivate(join(homedir(), '.forgemind', 'reflect', 'ollama-model')) ?? ''; } catch { /* optional; an unsafe file is ignored */ } }
 let prompt = '';
 for await (const chunk of stdin) { prompt += chunk; if (prompt.length > 400000) { console.error('prompt too large'); exit(1); } }
 try {

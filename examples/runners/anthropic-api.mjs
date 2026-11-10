@@ -2,19 +2,29 @@
 // Reflect runner: prompt on stdin -> Anthropic Messages API (no tools) -> text on stdout.
 // Use: brain reflect --runner cursor=/abs/path/to/examples/runners/anthropic-api.mjs
 import { stdin, stdout, env, exit } from 'node:process';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const MAX_OUT = 200000;
 // Scheduled (launchd) runs have no shell env, so fall back to a private key file.
+function readPrivate(file) {
+  // O_NOFOLLOW refuses symlinks; O_NONBLOCK stops a FIFO from hanging the open (the fstat check then refuses it).
+  let fd;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw new Error(`cannot open ${file} (symlinks are refused): ${error.code}`); }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077) !== 0) throw new Error(`${file} must be a regular file you own with mode 0600 or stricter`);
+    return readFileSync(fd, 'utf8').trim();
+  } finally { closeSync(fd); }
+}
 function readKey() {
   if (env.ANTHROPIC_API_KEY) return env.ANTHROPIC_API_KEY;
   const file = env.ANTHROPIC_API_KEY_FILE || join(homedir(), '.forgemind', 'reflect', 'anthropic-api-key');
-  let st;
-  try { st = statSync(file); } catch { console.error(`ANTHROPIC_API_KEY is not set and no key file at ${file}`); exit(1); }
-  if (!st.isFile() || (st.mode & 0o077) !== 0) { console.error(`key file ${file} must be a regular file with mode 0600 or stricter`); exit(1); }
-  const key = readFileSync(file, 'utf8').trim();
+  let key;
+  try { key = readPrivate(file); } catch (error) { console.error(error.message); exit(1); }
+  if (key === undefined) { console.error(`ANTHROPIC_API_KEY is not set and no key file at ${file}`); exit(1); }
   if (!key) { console.error(`key file ${file} is empty`); exit(1); }
   return key;
 }

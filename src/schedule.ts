@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -31,12 +31,14 @@ export function plistContent(brainDir: string, seconds: number, extra: string[] 
 `;
 }
 
-/** The ProgramArguments of the installed reflect plist, or undefined when none is installed or it is unreadable. No launchctl call, so it is fast. */
-export function scheduledCommand(deps: ScheduleDeps = {}): string[] | undefined {
+/** The installed reflect plist's arguments, interval and mtime, or undefined when none is installed or it is unreadable. No launchctl call, so it is fast. */
+export function scheduledInfo(deps: ScheduleDeps = {}): { args: string[]; everySeconds: number; mtimeMs: number } | undefined {
   try {
-    const text = readFileSync(join(deps.plistDir ?? join(homedir(), 'Library', 'LaunchAgents'), `${LABEL}.plist`), 'utf8');
+    const path = join(deps.plistDir ?? join(homedir(), 'Library', 'LaunchAgents'), `${LABEL}.plist`);
+    const text = readFileSync(path, 'utf8');
     const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? '';
-    return [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(m => m[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+    return { args: [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(m => m[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')),
+      everySeconds: Number(/<key>StartInterval<\/key><integer>(\d+)</.exec(text)?.[1]) || 0, mtimeMs: statSync(path).mtimeMs };
   } catch { return undefined; }
 }
 

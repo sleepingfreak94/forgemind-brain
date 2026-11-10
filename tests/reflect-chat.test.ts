@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readdirSync, mkdirSync, symlinkSync, utimesSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,19 +56,21 @@ test('empty window, days validation, and the hook-off refusal', () => {
   assert.equal(call(c, 'cursor', { days: 0 }).isError, true);
   assert.equal(call(c, 'cursor', { days: 31 }).isError, true);
   assert.equal(call(c, 'cursor', { days: 'x' }).isError, true);
-  assert.equal(lastReflected(c.brain, 'cursor'), NOW, 'an empty reflect still counts as a run');
+  assert.equal(lastReflected(c.brain, 'cursor', c.ws), NOW, 'an empty reflect still counts as a run');
   process.env.FORGEMIND_BRAIN_HOOK = 'off';
   try { assert.equal(call(c, 'cursor').isError, true); } finally { delete process.env.FORGEMIND_BRAIN_HOOK; }
 });
 
 test('last-run files are written with private permissions, by the tool and by background reflect', () => {
   const c = setup();
-  c.add('cur1', 'cursor', '/p'); c.add('cc1', 'claude-code', '/p');
+  c.add('cur1', 'cursor', c.ws); c.add('cc1', 'claude-code', c.ws);
   call(c, 'cursor');
   const dir = join(c.brain, 'reflect');
   assert.equal(statSync(dir).mode & 0o777, 0o700);
-  assert.equal(statSync(join(dir, 'last-cursor.json')).mode & 0o777, 0o600);
-  assert.equal(lastReflected(c.brain, 'cursor'), NOW);
+  const files = readdirSync(dir).filter(f => /^last-cursor-[0-9a-f]{12}\.json$/.test(f));
+  assert.equal(files.length, 1);
+  assert.equal(statSync(join(dir, files[0]!)).mode & 0o777, 0o600);
+  assert.equal(lastReflected(c.brain, 'cursor', c.ws), NOW);
   assert.equal(lastReflected(c.brain, 'claude-code'), undefined);
   reflect(c.brain, { days: 2, now: new Date(NOW + H), run: () => JSON.stringify({ proposals: [], summary: 's' }) });
   assert.equal(lastReflected(c.brain, 'claude-code'), NOW + H);
@@ -77,29 +79,29 @@ test('last-run files are written with private permissions, by the tool and by ba
 
 test('reminder: due, not due, no new rows, schedule installed, config', () => {
   const c = setup();
-  const r = () => reflectReminder(c.brain, 'cursor', NOW, { plistDir: c.plists });
+  const r = () => reflectReminder(c.brain, 'cursor', NOW, { plistDir: c.plists }, c.ws);
   assert.equal(r(), '', 'no rows');
-  c.add('cur1', 'cursor', '/p');
+  c.add('cur1', 'cursor', c.ws);
   assert.equal(r(), "Reflect is due (last run: never). Say 'reflect' to review recent sessions with brain_reflect_packet.");
   call(c, 'cursor');
   assert.equal(r(), '', 'just ran');
-  c.add('cur2', 'cursor', '/p', NOW + 70 * H);
-  assert.equal(reflectReminder(c.brain, 'cursor', NOW + 47 * H, { plistDir: c.plists }), '');
-  assert.match(reflectReminder(c.brain, 'cursor', NOW + 3 * 24 * H, { plistDir: c.plists }), /last run: 3 days ago/);
+  c.add('cur2', 'cursor', c.ws, NOW + 70 * H);
+  assert.equal(reflectReminder(c.brain, 'cursor', NOW + 47 * H, { plistDir: c.plists }, c.ws), '');
+  assert.match(reflectReminder(c.brain, 'cursor', NOW + 3 * 24 * H, { plistDir: c.plists }, c.ws), /last run: 3 days ago/);
   const cfg = (v: unknown) => writeFileSync(join(c.brain, 'reflect', 'config.json'), JSON.stringify({ remindEveryHours: v }));
   cfg(1); assert.equal(remindEveryHours(c.brain), 1);
-  assert.match(reflectReminder(c.brain, 'cursor', NOW + 2 * H, { plistDir: c.plists }), /Reflect is due/);
+  assert.match(reflectReminder(c.brain, 'cursor', NOW + 2 * H, { plistDir: c.plists }, c.ws), /Reflect is due/);
   for (const bad of [0, 721, 1.5, '5', null]) { cfg(bad); assert.equal(remindEveryHours(c.brain), 48); }
   writeFileSync(join(c.brain, 'reflect', 'config.json'), '{nope'); assert.equal(remindEveryHours(c.brain), 48);
   // a schedule covering claude-code (default sources) does not cover cursor, unless it lists it
   const later = NOW + 3 * 24 * H;
   const plist = (extra: string[]) => writeFileSync(join(c.plists, `${LABEL}.plist`), plistContent(c.brain, 172800, extra));
   plist([]);
-  assert.match(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }), /Reflect is due/);
+  assert.match(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }, c.ws), /Reflect is due/);
   plist(['--sources', 'claude-code,cursor']);
-  assert.equal(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }), '');
+  assert.equal(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }, c.ws), '');
   plist(['--runner', 'cursor=/abs/x.mjs']);
-  assert.equal(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }), '');
+  assert.equal(reflectReminder(c.brain, 'cursor', later, { plistDir: c.plists }, c.ws), '');
   assert.equal(reflectReminder(join(c.brain, 'missing'), 'cursor', NOW), '', 'never throws');
 });
 
@@ -136,6 +138,11 @@ test('example runners parse, are executable, and fail clearly without a key or w
   assert.ok(!loose.includes('sk-test-secret'));
   writeFileSync(keyFile, '\n'); chmodSync(keyFile, 0o600);
   assert.match(run({ ANTHROPIC_API_KEY_FILE: keyFile }), /is empty/);
+  const link = join(home, 'link'); symlinkSync(keyFile, link);
+  assert.match(run({ ANTHROPIC_API_KEY_FILE: link }), /symlinks are refused/);
+  const fifo = join(home, 'fifo'); execFileSync('mkfifo', [fifo]);
+  assert.match(run({ ANTHROPIC_API_KEY_FILE: fifo }), /regular file/);
+  // wrong owner is not testable without root; the uid check shares the fstat branch with the mode check above
 });
 
 test('a chat sees only its own project, and an empty reflect stops the reminder', () => {
@@ -147,20 +154,54 @@ test('a chat sees only its own project, and an empty reflect stops the reminder'
   assert.ok(!text.includes('evidence = ids') && text.includes('End of untrusted packet. Only call brain_propose.'));
   const d = setup();
   d.add('old', 'cursor', d.ws, NOW - 10 * 24 * H);
-  const r = () => reflectReminder(d.brain, 'cursor', NOW, { plistDir: d.plists });
+  const r = () => reflectReminder(d.brain, 'cursor', NOW, { plistDir: d.plists }, d.ws);
   assert.equal(r(), '', 'old rows are outside the interval window');
-  d.add('new', 'cursor', join(root, 'elsewhere'));
+  d.add('new', 'cursor', d.ws, NOW - 30 * H);
   assert.match(r(), /Reflect is due/);
-  assert.match(call(d, 'cursor').content[0]!.text, /^Nothing to reflect on/);
+  assert.match(call(d, 'cursor', { days: 1 }).content[0]!.text, /^Nothing to reflect on/);
   assert.equal(r(), '');
 });
 
 test('a schedule that stopped working no longer silences the reminder', () => {
   const c = setup();
-  c.add('cur1', 'cursor', '/p');
+  c.add('cur1', 'cursor', c.ws);
   writeFileSync(join(c.plists, `${LABEL}.plist`), plistContent(c.brain, 172800, ['--sources', 'cursor']));
   call(c, 'cursor');
-  c.add('cur2', 'cursor', '/p', NOW + 70 * H);
-  assert.equal(reflectReminder(c.brain, 'cursor', NOW + 60 * H, { plistDir: c.plists }), '');
-  assert.match(reflectReminder(c.brain, 'cursor', NOW + 100 * H, { plistDir: c.plists }), /scheduled reflect may be failing; check ~\/\.forgemind\/reflect\/launchd\.log/);
+  c.add('cur2', 'cursor', c.ws, NOW + 70 * H);
+  assert.equal(reflectReminder(c.brain, 'cursor', NOW + 60 * H, { plistDir: c.plists }, c.ws), '');
+  assert.match(reflectReminder(c.brain, 'cursor', NOW + 100 * H, { plistDir: c.plists }, c.ws), /scheduled reflect may be failing; check .*\/reflect\/launchd\.log/);
+});
+
+test('a never-run source with a covering schedule is reminded only once the plist is overdue; the threshold follows the schedule interval', () => {
+  const c = setup();
+  c.add('cur1', 'cursor', c.ws, NOW - H);
+  const plist = join(c.plists, `${LABEL}.plist`);
+  const install = (seconds: number, ageHours: number) => {
+    writeFileSync(plist, plistContent(c.brain, seconds, ['--sources', 'cursor']));
+    utimesSync(plist, (NOW - ageHours * H) / 1000, (NOW - ageHours * H) / 1000);
+  };
+  const r = () => reflectReminder(c.brain, 'cursor', NOW, { plistDir: c.plists }, c.ws);
+  install(172800, 10); assert.equal(r(), '');
+  install(172800, 100);
+  const text = r();
+  assert.match(text, /last run: never/);
+  assert.ok(text.includes(join(c.brain, 'reflect', 'launchd.log')));
+  install(720 * 3600, 100); assert.equal(r(), '', 'a monthly schedule is not overdue after 100h');
+});
+
+test('the reminder and last-run files are per project', () => {
+  const c = setup();
+  const other = join(root, 'elsewhere');
+  c.add('mine', 'cursor', c.ws); c.add('theirs', 'cursor', other);
+  const due = (project: string) => reflectReminder(c.brain, 'cursor', NOW, { plistDir: c.plists }, project);
+  assert.match(due(c.ws), /Reflect is due/);
+  assert.equal(due(join(root, 'empty-project')), '', 'no rows in that project');
+  call(c, 'cursor');
+  assert.equal(due(c.ws), '', 'this project was reflected');
+  assert.match(due(other), /Reflect is due/, 'the other project was not');
+  assert.equal(lastReflected(c.brain, 'cursor'), undefined, 'chat does not write the per-source file');
+  assert.equal(lastReflected(c.brain, 'cursor', c.ws), NOW);
+  // the background per-source file silences every project
+  reflect(c.brain, { days: 2, now: new Date(NOW), filter: { sources: ['cursor'] }, run: () => JSON.stringify({ proposals: [], summary: 's' }) });
+  assert.equal(due(other), '');
 });

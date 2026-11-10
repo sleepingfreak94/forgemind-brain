@@ -65,7 +65,7 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   if (event === 'session-start') {
     const store = new BrainStore(brainDirectory);
     try {
-      const due = reflectReminder(brainDirectory, source, (options.now ?? Date.now)(), options.schedule);
+      const due = reflectReminder(brainDirectory, source, (options.now ?? Date.now)(), options.schedule, workspace);
       const text = contextText(store, workspace) + (due ? '\n' + due : '') + '\n' + RECORD_LINE;
       return source === 'claude-code'
         ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } })
