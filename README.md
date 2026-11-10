@@ -31,6 +31,8 @@ worked and what failed, without you re-explaining it.
 5. **You review:** `npm run brain -- list --workspace <project> --status proposed`, then `approve` or
    `reject`.
 
+**Obsidian view:** `npm run brain -- export --obsidian` writes a read-only vault, so Obsidian's graph shows projects, sessions, ADRs, recipes and lessons ([docs](docs/brain.md#obsidian-view)).
+
 The server also tells agents to record a short summary after they read tickets,
 chats or email (Jira, Slack, Teams, Outlook) through your other MCP connectors.
 The summary holds decisions, outcomes and IDs; raw message content is never pasted. That way

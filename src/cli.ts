@@ -12,6 +12,7 @@ import type { ModelRunner, Spawn } from './reflect-runners.js';
 import { parseCustom } from './reflect-runners.js';
 import { schedule } from './schedule.js';
 import type { ScheduleDeps } from './schedule.js';
+import { exportVault, vaultStatus } from './vault.js';
 import { DOC_COMMANDS, DOC_STATUSES, docsCommand } from './documents-cli.js';
 
 class UsageError extends Error {}
@@ -36,6 +37,7 @@ const commands: Record<string, { required: string[]; optional: string[]; bool?: 
   schedule: { required: [], optional: ['every', 'sources', 'projects', 'runner'], bool: ['off', 'status'] },
   learn: { required: ['workspace'], optional: ['source', 'limit'] },
   history: { required: ['workspace'], optional: ['limit'] },
+  export: { required: [], optional: ['to', 'projects'], bool: ['obsidian', 'status', 'no-prompts', 'allow-repo', 'include-proposed'] },
   ...DOC_COMMANDS
 };
 // Usage: history --workspace PATH [--limit 1-200]
@@ -64,7 +66,7 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   for (const key of spec.required) if (!(key in args)) throw new UsageError(`missing --${key}`);
   if ('scope' in args && args.scope !== 'project' && args.scope !== 'global') throw new UsageError('invalid --scope');
   const docs = command.startsWith('docs-');
-  if ('status' in args && command !== 'schedule' && !(docs ? DOC_STATUSES : ['proposed', 'approved', 'rejected', 'retired']).includes(args.status!)) throw new UsageError('invalid --status');
+  if ('status' in args && command !== 'schedule' && command !== 'export' && !(docs ? DOC_STATUSES : ['proposed', 'approved', 'rejected', 'retired']).includes(args.status!)) throw new UsageError('invalid --status');
   if ('kind' in args && !(docs ? ['adr', 'recipe'] : ['convention', 'lesson', 'decision', 'pattern']).includes(args.kind!)) throw new UsageError('invalid --kind');
   if ('source' in args && !['git', 'github', 'all'].includes(args.source!)) throw new UsageError('invalid --source');
   if ('limit' in args && (!/^\d+$/.test(args.limit!) || Number(args.limit) < 1 || Number(args.limit) > 1000)) throw new UsageError('invalid --limit');
@@ -73,6 +75,8 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   if ('days' in args && (!/^\d+$/.test(args.days!) || Number(args.days) < 1 || Number(args.days) > 30)) throw new UsageError('invalid --days');
   if ('sources' in args && !args.sources!.split(',').every(x => ['claude-code', 'cursor', 'codex'].includes(x))) throw new UsageError('invalid --sources');
   if ('projects' in args && !args.projects!.split(',').every(x => isAbsolute(x))) throw new UsageError('invalid --projects');
+  if (command === 'export' && !('obsidian' in args)) throw new UsageError('export needs --obsidian');
+  if ('to' in args && !isAbsolute(args.to!)) throw new UsageError('invalid --to');
   if (command === 'schedule' && ['every', 'off', 'status'].filter(k => k in args).length !== 1) throw new UsageError('give exactly one of --every, --off or --status');
   if (command === 'history' && 'limit' in args && Number(args.limit) > 200) throw new UsageError('invalid --limit');
   return { command, args };
@@ -91,6 +95,10 @@ function execute(command: string, args: Record<string, string>, run: CliRunner, 
     catch (error) { throw error instanceof MigrationRefused ? new UsageError(error.message) : error; }
   }
   if (command === 'schedule') return { ok: true, ...schedule(dir, { every: args.every, sources: args.sources, projects: args.projects, runners: parseRunners(args.runner) && args.runner?.split('\n'), off: 'off' in args, status: 'status' in args }, options.schedule) };
+  if (command === 'export') {
+    if ('status' in args) return { ok: true, ...vaultStatus(dir) };
+    return { ok: true, ...exportVault(dir, { to: args.to, projects: args.projects?.split(','), prompts: !('no-prompts' in args), includeProposed: 'include-proposed' in args, allowRepo: 'allow-repo' in args }) };
+  }
   if (command === 'reflect') {
     if ('last' in args) return { ok: true, ...lastReport(dir) };
     return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model, custom: parseRunners(args.runner), spawn: options.reflect?.spawn, has: options.reflect?.has,

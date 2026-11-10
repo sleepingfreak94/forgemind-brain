@@ -7,6 +7,7 @@ import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
 import { markReflected, reflectDirectory } from './reflect-state.js';
 export { reflectDirectory } from './reflect-state.js';
+import { refreshVault } from './vault.js';
 import { planFor } from './reflect-runners.js';
 import type { ModelRunner, Spawn } from './reflect-runners.js';
 
@@ -231,7 +232,8 @@ export function reflect(brainDir: string, options: ReflectOptions): Record<strin
     let report: string | undefined, reportError: string | undefined;
     try { writeFileSync(path, reportMarkdown(results, entries, now), { mode: 0o600 }); chmodSync(path, 0o600); report = path; }
     catch (error) { reportError = (error as Error).message; } // the proposals are already stored; never lose their ids
-    return { ...(report ? { report } : { reportError, note: 'report not written; proposals above are stored as proposed' }), proposed,
+    const vault = succeeded ? refreshVault(brainDir) : undefined; // never fails the run
+    return { ...(vault ? { vault } : {}), ...(report ? { report } : { reportError, note: 'report not written; proposals above are stored as proposed' }), proposed,
       retire: results.reduce((n, r) => n + (r.parsed?.retire.length ?? 0), 0), duplicates: results.reduce((n, r) => n + (r.parsed?.duplicates.length ?? 0), 0),
       sources: results.map(r => ({ source: r.source, status: r.skipped ?? 'ok' })) };
   });
