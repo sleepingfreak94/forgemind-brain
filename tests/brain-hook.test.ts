@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrainStore } from '../src/brain.js';
-import { cleanPrompt, runBrainHook } from '../src/brain-hook.js';
+import { cleanPrompt, runBrainHook, runBrainHookDetailed } from '../src/brain-hook.js';
 
 const LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
 const NOW = Date.parse('2026-10-24T10:00:00Z');
@@ -132,4 +132,16 @@ test('garbage input returns empty string', async () => {
   const argv = ['session-end', '--source', 'claude-code'];
   for (const input of ['not json', '[]', '{}', '{"cwd":"' + 'a'.repeat(1048577) + '"}']) assert.equal(await runBrainHook(argv, input, opts()), '');
   assert.equal(await runBrainHook(['session-middle', '--source', 'x'], '{}', opts()), '');
+});
+
+test('codex is an accepted hook source and is recorded as codex', async () => {
+  const t = transcript([{ role: 'user', content: 'Codex prompt' }]);
+  const input = JSON.stringify({ session_id: sid(), workspace_roots: [ws], transcript_path: t });
+  const start = await runBrainHook(['session-start', '--source', 'codex'], input, opts());
+  assert.ok(JSON.parse(start).additional_context.startsWith('ForgeMind brain.'));
+  assert.equal(await runBrainHook(['session-end', '--source', 'codex'], input, opts(['a.ts'])), '');
+  const row = history().find(x => x.title === 'Session (auto): Codex prompt');
+  assert.equal(row?.source, 'codex');
+  const bad = await runBrainHookDetailed(['session-start', '--source', 'gemini'], input, opts());
+  assert.match(bad.error ?? '', /unknown source/);
 });

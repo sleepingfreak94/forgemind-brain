@@ -173,3 +173,14 @@ test('runBrainMcp over streams', async () => {
 
   await assert.rejects(runBrainMcp([], new PassThrough(), new PassThrough()));
 });
+
+test('codex is an accepted source and brain_record stores it', async () => {
+  const argv = ['--workspace', workspace, '--brain-dir', brainDirectory];
+  const lines = await drive([...argv, '--source', 'codex'], [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'brain_record', arguments: { title: 'Codex work', summary: 's', outcome: 'done' } } }) + '\n',
+  ]);
+  assert.equal(lines.length, 1);
+  assert.equal(JSON.parse(lines[0]!).result.isError, false);
+  assert.equal(withStore(s => s.history(workspace)).find(h => h.title === 'Codex work')?.source, 'codex');
+  await assert.rejects(runBrainMcp([...argv, '--source', 'gemini'], new PassThrough(), new PassThrough()), /usage/);
+});

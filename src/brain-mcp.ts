@@ -3,10 +3,12 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
-import { BrainStore, defaultBrainDirectory } from './brain.js';
+import { BrainStore, clientSources, defaultBrainDirectory } from './brain.js';
 import type { BrainEntry, BrainHistory, BrainKind, BrainSource } from './brain.js';
 
-export interface BrainMcpContext { brainDirectory: string; workspace: string; source: 'claude-code' | 'cursor'; now?: (() => Date) | undefined }
+type ClientSource = (typeof clientSources)[number];
+
+export interface BrainMcpContext { brainDirectory: string; workspace: string; source: ClientSource; now?: (() => Date) | undefined }
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_LINE = 1048576;
@@ -169,7 +171,7 @@ export function handleBrainMessage(message: unknown, context: BrainMcpContext): 
 
 class UsageError extends Error {}
 
-function parseArgs(argv: string[]): { source: 'claude-code' | 'cursor'; workspace: string; brainDirectory: string } {
+function parseArgs(argv: string[]): { source: ClientSource; workspace: string; brainDirectory: string } {
   let source: string | undefined, workspace = process.cwd(), brainDirectory = defaultBrainDirectory();
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i], value = argv[i + 1];
@@ -179,8 +181,9 @@ function parseArgs(argv: string[]): { source: 'claude-code' | 'cursor'; workspac
     else if (flag === '--brain-dir') brainDirectory = value;
     else throw new UsageError(`unknown option ${flag}`);
   }
-  if (source !== 'claude-code' && source !== 'cursor') throw new UsageError('usage: --source claude-code|cursor [--workspace PATH] [--brain-dir PATH]');
-  return { source, workspace, brainDirectory };
+  const known = clientSources.find(s => s === source);
+  if (!known) throw new UsageError('usage: --source claude-code|cursor|codex [--workspace PATH] [--brain-dir PATH]');
+  return { source: known, workspace, brainDirectory };
 }
 
 export async function runBrainMcp(argv: string[], input: Readable, output: Writable): Promise<void> {

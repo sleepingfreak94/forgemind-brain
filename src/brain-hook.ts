@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BrainStore, containsSecret, defaultBrainDirectory } from './brain.js';
+import { BrainStore, clientSources, containsSecret, defaultBrainDirectory } from './brain.js';
 import { contextText, resolveWorkspace } from './brain-mcp.js';
 
 export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }
@@ -93,10 +93,10 @@ function defaultChangedFiles(workspace: string): string[] {
 }
 
 async function runBrainHookCore(argv: string[], input: string, options: BrainHookOptions): Promise<string> {
-  if (argv.length !== 3 || argv[1] !== '--source') throw new Error('usage: session-start|session-end --source claude-code|cursor');
-  const event = argv[0], source = argv[2];
+  if (argv.length !== 3 || argv[1] !== '--source') throw new Error('usage: session-start|session-end --source claude-code|cursor|codex');
+  const event = argv[0], source = clientSources.find(s => s === argv[2]);
   if (event !== 'session-start' && event !== 'session-end') throw new Error('unknown event');
-  if (source !== 'claude-code' && source !== 'cursor') throw new Error('unknown source');
+  if (!source) throw new Error('unknown source');
   if (Buffer.byteLength(input, 'utf8') > MAX_INPUT) throw new Error('input too large');
   const parsed: unknown = JSON.parse(input);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('input must be an object');

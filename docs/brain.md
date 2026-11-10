@@ -62,6 +62,16 @@ Cursor, in `~/.cursor/mcp.json`:
 {"mcpServers":{"forgemind-brain":{"command":"node","args":["/absolute/path/to/forgemind/dist/src/memory/brain-mcp.js","--source","cursor"]}}}
 ```
 
+Codex, in `~/.codex/config.toml` (Codex has no session hook, so MCP use is enough):
+
+```
+[mcp_servers.forgemind-brain]
+command = "node"
+args = ["/absolute/path/to/forgemind/dist/src/memory/brain-mcp.js", "--source", "codex"]
+```
+
+and add to the project `AGENTS.md`: "Call `brain_context` at start; call `brain_record` before finishing."
+
 For the Cursor CLI, allow these four tools in the `permissions.allow` list of `~/.cursor/cli-config.json`:
 
 ```
@@ -73,7 +83,7 @@ Mcp(forgemind-brain:brain_propose)
 
 The file is ~/.cursor/cli-config.json; keep any entries already there.
 
-Options: `--source claude-code|cursor` (required), `--workspace` (default current directory, resolved to its git top-level), `--brain-dir`.
+Options: `--source claude-code|cursor|codex` (required), `--workspace` (default current directory, resolved to its git top-level), `--brain-dir`.
 
 Tools: `brain_context` (project packet), `brain_search` (query, optional limit 1 to 5), `brain_propose` (kind, text, reason; stays `proposed` until you approve it), `brain_record` (title, summary, files, outcome; once per distinct summary per day).
 

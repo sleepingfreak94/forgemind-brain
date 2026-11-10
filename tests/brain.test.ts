@@ -173,7 +173,7 @@ test('record validates limits and refuses secrets', () => withDir(dir => {
   s.close();
 }));
 
-test('version 1 database migrates to 2; version 3 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex); version 4 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
   const first = new BrainStore(dir);
   const id = first.propose(base); first.close();
   const file = join(dir, 'brain.sqlite');
@@ -182,8 +182,20 @@ test('version 1 database migrates to 2; version 3 is refused', { skip: process.p
   assert.equal(s.list()[0]!.id, id);
   s.record(run); assert.equal(s.history('/repo/a').length, 1);
   s.close();
+  const v2 = new DatabaseSync(file);
+  v2.exec(`DROP TABLE history; CREATE TABLE history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
+    source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor')), title TEXT NOT NULL,
+    summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+    INSERT INTO history VALUES ('old', '/repo/a', 'cursor', 'old row', '', '[]', 'done', '[]', 1); PRAGMA user_version = 2`);
+  v2.close();
+  const up = new BrainStore(dir);
+  assert.equal(up.history('/repo/a')[0]!.title, 'old row');
+  up.record({ ...run, key: 'c', source: 'codex' });
+  assert.equal(up.history('/repo/a')[0]!.source, 'codex');
+  assert.equal(up.list()[0]!.id, id);
+  up.close();
   const check = new DatabaseSync(file);
-  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 2);
-  check.exec('PRAGMA user_version = 3'); check.close();
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 3);
+  check.exec('PRAGMA user_version = 4'); check.close();
   assert.throws(() => new BrainStore(dir), /unsupported/);
 }));
