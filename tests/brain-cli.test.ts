@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
@@ -87,11 +87,14 @@ test('history lists this workspace only', () => {
   const base = { source: 'harness' as const, summary: '', files: [], outcome: 'completed', evidence: [] };
   store.record({ ...base, project: ws, key: 'r1', title: 'first' });
   store.record({ ...base, project: ws, key: 'r2', title: 'second' });
+  const shot = join(ws, 'a.png'); writeFileSync(shot, 'i');
+  store.record({ ...base, project: ws, key: 'r4', title: 'with shot', attachments: [shot] });
   store.record({ ...base, project: ws2, key: 'r3', title: 'elsewhere' });
   store.close();
   const all = run(brain, ['history', '--workspace', ws]);
   assert.equal(all.code, 0);
-  assert.deepEqual(all.json.history.map((h: any) => h.title), ['second', 'first']);
+  assert.deepEqual(all.json.history.map((h: any) => h.title), ['with shot', 'second', 'first']);
+  assert.match(all.json.history[0].attachments[0], /1\.png$/);
   assert.equal(run(brain, ['history', '--workspace', ws, '--limit', '1']).json.history.length, 1);
   for (const bad of ['0', '201', 'abc']) assert.equal(run(brain, ['history', '--workspace', ws, '--limit', bad]).code, 2);
 });

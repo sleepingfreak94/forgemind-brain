@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -8,7 +8,7 @@ import { BrainStore } from '../src/brain.js';
 import { handleBrainMessage, resolveWorkspace, runBrainMcp } from '../src/brain-mcp.js';
 
 interface Reply { result?: { content: { text: string }[]; isError: boolean; tools?: { name: string }[]; protocolVersion?: string;
-  serverInfo?: { name: string } }; error?: { code: number; message: string } }
+  serverInfo?: { name: string }; instructions?: string }; error?: { code: number; message: string } }
 
 const roots: string[] = [];
 const temp = (): string => { const dir = realpathSync(mkdtempSync(join(tmpdir(), 'brain-mcp-'))); roots.push(dir); return dir; };
@@ -46,6 +46,25 @@ test('initialize and tools/list', () => {
   assert.equal(init?.result?.serverInfo?.name, 'forgemind-brain');
   assert.equal(send({ method: 'initialize', params: { protocolVersion: '1999' } })?.result?.protocolVersion, '2025-06-18');
   assert.deepEqual(send({ method: 'tools/list' })?.result?.tools?.map(t => t.name), ['brain_context', 'brain_search', 'brain_propose', 'brain_record']);
+});
+
+test('initialize returns the remember-what-you-read rule', () => {
+  const text = send({ method: 'initialize', params: {} })?.result?.instructions ?? '';
+  assert.ok(text.length > 0 && text.length < 600);
+  for (const word of ['brain_context', 'brain_record', 'Jira', 'Confluence', 'never paste', 'attachments', 'brain_propose']) assert.ok(text.includes(word), word);
+});
+
+test('attachments: search shows stored paths, context shows only a count', () => {
+  const shot = join(temp(), 'before.png'); writeFileSync(shot, 'img');
+  const r = call('brain_record', { title: 'Bug bash checkout', summary: 'checkout button misaligned', outcome: 'filed', attachments: [shot, shot] });
+  assert.equal(r.isError, false);
+  const found = call('brain_search', { query: 'checkout misaligned' });
+  assert.match(found.text, /\[attachments: [^\]]*\/1\.png, [^\]]*\/2\.png\]/);
+  assert.ok(found.text.length <= 2000);
+  const ctx = call('brain_context').text;
+  assert.match(ctx, /Bug bash checkout.*\(2 attachments\)/);
+  assert.ok(!ctx.includes('.png') && ctx.length <= 3200);
+  assert.match(call('brain_record', { title: 'x', summary: 'y', outcome: 'z', attachments: ['/nope.png'] }).text, /attachment not found/);
 });
 
 test('resolveWorkspace walks up to .git', () => {

@@ -204,7 +204,7 @@ test('record validates limits and refuses secrets', () => withDir(dir => {
   s.close();
 }));
 
-test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex); version 4 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('version 1 and 2 databases migrate to 4 (history keeps rows, accepts codex); version 5 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
   const first = new BrainStore(dir);
   const id = first.propose(base); first.close();
   const file = join(dir, 'brain.sqlite');
@@ -226,9 +226,25 @@ test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex)
   assert.equal(up.list()[0]!.id, id);
   up.close();
   const check = new DatabaseSync(file);
-  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 3);
-  check.exec('PRAGMA user_version = 4'); check.close();
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
+  check.exec('PRAGMA user_version = 5'); check.close();
   assert.throws(() => new BrainStore(dir), /unsupported/);
+}));
+
+test('version 3 upgrades to 4 in place and keeps history rows', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  new BrainStore(dir).close();
+  const raw = new DatabaseSync(join(dir, 'brain.sqlite'));
+  raw.exec(`DROP TABLE history; CREATE TABLE history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
+    source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor','codex')), title TEXT NOT NULL,
+    summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+    INSERT INTO history VALUES ('old', '/repo/a', 'cursor', 'v3 row', '', '[]', 'done', '[]', 1); PRAGMA user_version = 3`);
+  raw.close();
+  const s = new BrainStore(dir);
+  assert.deepEqual(s.history('/repo/a').map(h => [h.title, h.attachments]), [['v3 row', []]]);
+  s.close();
+  const check = new DatabaseSync(join(dir, 'brain.sqlite'));
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
+  check.close();
 }));
 
 test('migrate removes a stale migrating file; a stray hard link names itself in the open error', { skip: process.platform === 'win32' }, () => withDir(dir => {
@@ -241,4 +257,11 @@ test('migrate removes a stale migrating file; a stray hard link names itself in 
   assert.throws(() => new BrainStore(dir), /unsafe memory storage: .*\.brain\.migrating-2147483646-abc.* safe to delete/);
   unlinkSync(stale);
   new BrainStore(dir).close();
+}));
+
+test('migrate keeps a migrating file whose process is alive but not ours (EPERM)', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  const live = join(dir, '.brain.migrating-1-abc');
+  copyFileSync(legacyBrain(dir), live); chmodSync(live, 0o600);
+  migrateLegacy(dir);
+  assert.equal(existsSync(live), true);
 }));

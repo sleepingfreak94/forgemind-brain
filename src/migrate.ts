@@ -23,7 +23,8 @@ export function migrateLegacy(directory: string): { entries: number; history: nu
   for (const name of strayMigrationFiles(directory)) {
     const pidOf = Number(/^\.brain\.migrating-(\d+)-/.exec(name)?.[1]);
     if (Number.isInteger(pidOf)) {
-      try { process.kill(pidOf, 0); continue; } catch { /* not running */ }
+      try { process.kill(pidOf, 0); continue; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EPERM') continue; /* alive, another user's */ }
     }
     try { unlinkSync(join(directory, name)); } catch { /* already gone */ }
   }
