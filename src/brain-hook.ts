@@ -16,6 +16,12 @@ const MAX_FILES = 200;
 const RECORD_LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
 
 const red = (value: string): string => containsSecret(value) ? '[redacted]' : value;
+// Cutting redacted text can create a new match (e.g. a cut AKIA run), so re-redact until stable; give up rather than store a secret.
+function cut(text: string, max: number): string {
+  let out = redactSecrets(text).slice(0, max);
+  for (let i = 0; i < 3 && containsSecret(out); i++) out = redactSecrets(out).slice(0, max);
+  return containsSecret(out) ? '[redacted]' : out;
+}
 const sha = (value: string): string => createHash('sha256').update(value).digest('hex');
 
 function defaultChangedFiles(workspace: string): string[] {
@@ -80,16 +86,16 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   const prompts: string[] = [];
   let total = 0;
   for (const p of real.slice(0, MAX_PROMPTS)) {
-    const text = redactSecrets(p).slice(0, MAX_PROMPT); // redact the whole text first, then cut
+    const text = cut(p, MAX_PROMPT); // redact the whole text first, then cut
     if (total + text.length > MAX_PROMPT_TOTAL) break; // keep the earliest
     prompts.push(text); total += text.length;
   }
   const raw = capture?.signals;
   const n = (x: number): number => Math.min(Math.max(0, Math.trunc(x)), 1e9);
   const signals = raw && { prompts: n(raw.prompts), corrections: n(raw.corrections), correctionIndexes: raw.correctionIndexes.slice(0, MAX_PROMPTS).map(n),
-    model: raw.model === null ? null : redactSecrets(raw.model).slice(0, 100) || null, assistantTurns: n(raw.assistantTurns), toolErrors: n(raw.toolErrors),
+    model: raw.model === null ? null : cut(raw.model, 100) || null, assistantTurns: n(raw.assistantTurns), toolErrors: n(raw.toolErrors),
     durationMs: raw.durationMs === null ? null : n(raw.durationMs) };
-  const title = real.length > 0 ? redactSecrets(real[0]!.replace(/\s+/g, ' ').trim()).slice(0, TITLE_PROMPT_CAP).trimEnd() : `Session: ${files.length} files changed`;
+  const title = real.length > 0 ? cut(real[0]!.replace(/\s+/g, ' ').trim(), TITLE_PROMPT_CAP).trimEnd() : `Session: ${files.length} files changed`;
   const summary = `${real.length} prompts, ${signals?.corrections ?? 0} corrections, ${files.length} files changed` + (signals?.model ? `, model ${signals.model}` : '');
   let id = typeof sessionId === 'string' && sessionId !== '' ? sessionId
     : sha(JSON.stringify([typeof transcript === 'string' ? transcript : workspace, new Date(now).toISOString().slice(0, 10)]));
