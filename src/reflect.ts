@@ -7,17 +7,20 @@ import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
 
 /** Takes the prompt, returns the model's answer text. Injected in tests. */
-export type ModelRunner = (prompt: string) => string;
-export interface Packet { text: string; ids: Set<string>; entryIds: Map<string, string | null>; projects: Set<string> }
+export type ModelRunner = (prompt: string, cwd: string) => string;
+export interface Packet { text: string; ids: Set<string>; entryIds: Map<string, { project: string | null; status: string }>; projects: Set<string> }
 export const PACKET_LIMIT = 60000;
 const ENTRY_BUDGET = 12000;
 const DAY = 86400000;
 
 // No tools and no MCP servers, so transcript text cannot trigger actions; sonnet is the current alias.
-export const claudeArgs = ['-p', '--output-format', 'json', '--model', 'sonnet', '--tools', '', '--strict-mcp-config', '--no-session-persistence'];
-export const makeRunner = (spawn: typeof spawnSync = spawnSync): ModelRunner => prompt => {
+export interface Filter { sources: string[]; projects?: string[] | undefined }
+export const defaultSources = ['claude-code'];
+// --safe-mode drops CLAUDE.md, skills, plugins, hooks, MCP and agents (auth still works); the rest are extra layers.
+export const claudeArgs = ['-p', '--output-format', 'json', '--model', 'sonnet', '--safe-mode', '--tools', '', '--strict-mcp-config', '--no-session-persistence'];
+export const makeRunner = (spawn: typeof spawnSync = spawnSync): ModelRunner => (prompt, cwd) => {
   // FORGEMIND_BRAIN_HOOK=off keeps the user's brain hooks from recording this session (--bare would break OAuth login).
-  const r = spawn('claude', claudeArgs, { env: { ...process.env, FORGEMIND_BRAIN_HOOK: 'off' }, input: prompt, encoding: 'utf8', timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
+  const r = spawn('claude', claudeArgs, { cwd, env: { ...process.env, FORGEMIND_BRAIN_HOOK: 'off' }, input: prompt, encoding: 'utf8', timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
   if (r.error || r.status !== 0) throw new Error(`model run failed: ${r.error?.message ?? r.stderr.slice(0, 200)}`);
   const body = JSON.parse(r.stdout) as { result?: unknown; is_error?: unknown };
   if (body.is_error || typeof body.result !== 'string') throw new Error('model run failed: bad envelope');
@@ -49,22 +52,25 @@ function recipeLine(row: Record<string, unknown>): string {
 }
 
 /** The last `days` of history and recipes across all projects, newest first, shared fairly between projects. */
-export function buildPacket(directory: string, days: number, now = Date.now()): Packet {
+export function buildPacket(directory: string, days: number, now = Date.now(), filter: Filter = { sources: defaultSources }): Packet {
   new BrainStore(directory).close(); // opens and migrates; the reads below are my own SQL
   const db = new DatabaseSync(join(directory, 'brain.sqlite'), { readOnly: true });
   try {
     const since = now - days * DAY;
+    const marks = (list: string[]) => list.map(() => '?').join(',');
+    const only = `source IN (${marks(filter.sources)})${filter.projects ? ` AND project IN (${marks(filter.projects)})` : ''}`;
+    const args = [...filter.sources, ...(filter.projects ?? [])];
     const items: { project: string; at: number; id: string; line: string }[] = [];
-    for (const r of db.prepare('SELECT * FROM history WHERE at >= ? ORDER BY at DESC').all(since))
+    for (const r of db.prepare(`SELECT * FROM history WHERE at >= ? AND ${only} ORDER BY at DESC`).all(since, ...args))
       items.push({ project: r.project as string, at: r.at as number, id: r.id as string, line: sessionLine(r) });
-    for (const r of db.prepare("SELECT * FROM documents WHERE kind = 'recipe' AND updated_at >= ? ORDER BY updated_at DESC").all(since))
+    for (const r of db.prepare(`SELECT * FROM documents WHERE kind = 'recipe' AND updated_at >= ? AND ${only} ORDER BY updated_at DESC`).all(since, ...args))
       items.push({ project: r.project as string, at: r.updated_at as number, id: r.id as string, line: recipeLine(r) });
-    const entryLines: string[] = [], entryIds = new Map<string, string | null>();
+    const entryLines: string[] = [], entryIds: Packet['entryIds'] = new Map();
     let used = 0;
     for (const r of db.prepare("SELECT * FROM entries WHERE status IN ('approved','proposed') ORDER BY status, created_at DESC").all()) {
       const line = JSON.stringify({ t: 'entry', id: r.id, status: r.status, kind: r.kind, project: r.project, text: clip(r.text, 300) });
       if (used + line.length + 1 > ENTRY_BUDGET) break;
-      used += line.length + 1; entryLines.push(line); entryIds.set(r.id as string, r.project as string | null);
+      used += line.length + 1; entryLines.push(line); entryIds.set(r.id as string, { project: r.project as string | null, status: r.status as string });
     }
     const queues = new Map<string, typeof items>();
     for (const item of items.sort((a, b) => b.at - a.at)) queues.set(item.project, [...(queues.get(item.project) ?? []), item]);
@@ -92,13 +98,24 @@ const kinds = ['lesson', 'convention', 'pattern', 'decision'];
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
+const schemaKeys = ['proposals', 'retire', 'duplicates', 'summary'];
+function extractJson(raw: string): Record<string, unknown> {
+  const text = raw.trim();
+  const tries = [text, /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text)?.[1] ?? ''];
+  for (const t of tries) { try { const v: unknown = JSON.parse(t); if (isObj(v)) return v; } catch { /* next */ } }
+  // Last resort for prose around the JSON: try bounded brace pairs until one parses as an object with a schema key.
+  const starts = [...text.matchAll(/\{/g)].map(m => m.index).slice(0, 20);
+  const ends = [...text.matchAll(/\}/g)].map(m => m.index).slice(-20).reverse();
+  for (const a of starts) for (const b of ends) if (b > a) {
+    try { const v: unknown = JSON.parse(text.slice(a, b + 1)); if (isObj(v) && schemaKeys.some(k => k in v)) return v; } catch { /* next */ }
+  }
+  throw new Error('model answer is not valid JSON');
+}
+
 /** Strictly validate the model's answer; anything off-schema or unknown to the packet is dropped. Never throws on content. */
 export function parseAnswer(raw: string, packet: Packet): Parsed {
   const out: Parsed = { proposals: [], retire: [], duplicates: [], summary: '' };
-  const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
-  let data: unknown;
-  try { data = JSON.parse(raw.slice(start, end + 1)); } catch { throw new Error('model answer is not valid JSON'); }
-  if (!isObj(data)) throw new Error('model answer is not a JSON object');
+  const data = extractJson(raw);
   out.summary = clip(data.summary, 1000);
   for (const p of Array.isArray(data.proposals) ? data.proposals : []) {
     if (out.proposals.length >= 10) break;
@@ -110,28 +127,30 @@ export function parseAnswer(raw: string, packet: Packet): Parsed {
     if (containsSecret(p.text) || containsSecret(reason)) continue;
     out.proposals.push({ project, kind: p.kind as BrainKind, text: p.text, reason, evidence });
   }
-  const approvedId = (id: unknown): id is string => typeof id === 'string' && packet.entryIds.has(id);
+  const approvedId = (id: unknown): id is string => typeof id === 'string' && packet.entryIds.get(id)?.status === 'approved';
   for (const r of Array.isArray(data.retire) ? data.retire : [])
     if (isObj(r) && approvedId(r.id)) out.retire.push({ id: r.id, reason: clip(r.reason, 500) });
   for (const d of Array.isArray(data.duplicates) ? data.duplicates : []) {
     if (!isObj(d) || !approvedId(d.keep)) continue;
-    const drop = strs(d.drop).filter(id => packet.entryIds.has(id) && id !== d.keep);
+    const drop = strs(d.drop).filter(id => approvedId(id) && id !== d.keep);
     if (drop.length) out.duplicates.push({ keep: d.keep, drop, reason: clip(d.reason, 500) });
   }
   return out;
 }
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-export function reportMarkdown(parsed: Parsed, proposed: { id: string; proposal: Proposal }[], entries: Map<string, string | null>, now: Date): string {
-  const lines = [`# Reflect report ${now.toISOString()}`, '', parsed.summary || '(no summary)', '', '## Proposed (pending your approval)', ''];
+/** Model text becomes one quoted line: no headings, fences, lists or tables can be forged from it. */
+const quote = (v: string): string => JSON.stringify(v.replace(/\s+/g, ' ').replace(/`/g, '').replace(/^[\s#>\-|*]+/, '').trim());
+export function reportMarkdown(parsed: Parsed, proposed: { id: string; proposal: Proposal }[], entries: Map<string, { project: string | null }>, now: Date): string {
+  const lines = [`# Reflect report ${now.toISOString()}`, '', `Summary (model text): ${quote(parsed.summary)}`, '', '## Proposed (pending your approval)', ''];
   if (!proposed.length) lines.push('Nothing proposed.');
-  for (const { id, proposal: p } of proposed) lines.push(`- \`${id}\` [${p.kind}] ${p.project ?? 'all projects'}: ${p.text}`, `  - reason: ${p.reason}`, `  - evidence: ${p.evidence.join(', ')}`);
+  for (const { id, proposal: p } of proposed) lines.push(`- \`${id}\` [${p.kind}] ${p.project ?? 'all projects'}: ${quote(p.text)}`, `  - reason: ${quote(p.reason)}`, `  - evidence: ${p.evidence.join(', ')}`);
   lines.push('', '## Suggested retirements (not applied)', '');
   if (!parsed.retire.length) lines.push('None.');
-  for (const r of parsed.retire) lines.push(`- \`${r.id}\`: ${r.reason}`);
+  for (const r of parsed.retire) lines.push(`- \`${r.id}\`: ${quote(r.reason)}`);
   lines.push('', '## Suggested merges (not applied)', '');
   if (!parsed.duplicates.length) lines.push('None.');
-  for (const d of parsed.duplicates) lines.push(`- keep \`${d.keep}\`, drop ${d.drop.map(x => `\`${x}\``).join(', ')}: ${d.reason}`);
+  for (const d of parsed.duplicates) lines.push(`- keep \`${d.keep}\`, drop ${d.drop.map(x => `\`${x}\``).join(', ')}: ${quote(d.reason)}`);
   const by = (list: { id: string; project: string | null }[]) => {
     const m = new Map<string, string[]>();
     for (const { id, project } of list) m.set(project ?? '<project>', [...(m.get(project ?? '<project>') ?? []), id]);
@@ -140,7 +159,7 @@ export function reportMarkdown(parsed: Parsed, proposed: { id: string; proposal:
   const cmds: string[] = [];
   for (const [ws, ids] of by(proposed.map(({ id, proposal }) => ({ id, project: proposal.project }))))
     cmds.push(`npm run brain -- approve --workspace ${q(ws)} --ids ${ids.join(',')}`, `npm run brain -- reject --workspace ${q(ws)} --ids ${ids.join(',')} --note "not useful"`);
-  for (const [ws, ids] of by(parsed.retire.map(r => ({ id: r.id, project: entries.get(r.id) ?? null }))))
+  for (const [ws, ids] of by(parsed.retire.map(r => ({ id: r.id, project: entries.get(r.id)?.project ?? null }))))
     cmds.push(`npm run brain -- retire --workspace ${q(ws)} --ids ${ids.join(',')}`);
   lines.push('', '## Commands (review, then run what you agree with; `<project>` = a workspace that can see the entry)', '', '```', ...cmds, '```', '');
   return lines.join('\n');
@@ -148,7 +167,14 @@ export function reportMarkdown(parsed: Parsed, proposed: { id: string; proposal:
 
 function withLock<T>(directory: string, work: () => T): T {
   const lock = join(directory, 'lock');
-  try { if (Date.now() - statSync(lock).mtimeMs > 1800000) rmSync(lock); } catch { /* none */ }
+  try {
+    const before = statSync(lock);
+    if (Date.now() - before.mtimeMs > 1800000) {
+      // shortcut: a tiny window remains between this re-stat and the rm; acceptable for one owner running a job every 2 days
+      const again = statSync(lock);
+      if (again.ino === before.ino && again.mtimeMs === before.mtimeMs) rmSync(lock);
+    }
+  } catch { /* none */ }
   let fd: number;
   try { fd = openSync(lock, 'wx', 0o600); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('another reflect run is in progress'); throw error; }
@@ -167,14 +193,14 @@ export function lastReport(brainDir: string): { path: string; text: string } {
   return { path: join(dir, name), text: readFileSync(join(dir, name), 'utf8') };
 }
 
-export function reflect(brainDir: string, options: { days: number; dryRun?: boolean; run?: ModelRunner | undefined; now?: Date }): Record<string, unknown> {
+export function reflect(brainDir: string, options: { days: number; filter?: Filter | undefined; dryRun?: boolean; run?: ModelRunner | undefined; now?: Date }): Record<string, unknown> {
   const now = options.now ?? new Date();
-  const packet = buildPacket(brainDir, options.days, now.getTime());
+  const packet = buildPacket(brainDir, options.days, now.getTime(), options.filter);
   const prompt = buildPrompt(packet.text);
   if (options.dryRun) return { packetChars: packet.text.length, sessionsAndRecipes: packet.ids.size, prompt };
   const dir = reflectDirectory(brainDir);
   return withLock(dir, () => {
-    const parsed = parseAnswer((options.run ?? defaultRunner)(prompt), packet);
+    const parsed = parseAnswer((options.run ?? defaultRunner)(prompt, dir), packet);
     const store = new BrainStore(brainDir);
     const proposed: { id: string; proposal: Proposal }[] = [];
     try {

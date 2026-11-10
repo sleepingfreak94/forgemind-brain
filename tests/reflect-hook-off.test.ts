@@ -26,7 +26,7 @@ test('the default runner spawns claude with the hooks switched off and the exist
     seen = options;
     return { status: 0, stdout: JSON.stringify({ result: 'hi' }), stderr: '' };
   }) as unknown as typeof spawnSync;
-  assert.equal(makeRunner(fake)('p'), 'hi');
+  assert.equal(makeRunner(fake)('p', '/cwd'), 'hi');
   assert.equal(seen.env!.FORGEMIND_BRAIN_HOOK, 'off');
   assert.equal(seen.env!.PATH, process.env.PATH);
   assert.equal(seen.input, 'p');

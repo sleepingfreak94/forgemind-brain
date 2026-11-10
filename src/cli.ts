@@ -1,13 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BrainStore, defaultBrainDirectory } from './brain.js';
 import type { BrainEntry, BrainKind, BrainStatus } from './brain.js';
 import { MigrationRefused, migrateLegacy } from './migrate.js';
 import { learnFromGit, learnFromGitHub } from './brain-learn.js';
 import type { BrainProposal } from './brain-learn.js';
-import { lastReport, reflect } from './reflect.js';
+import { defaultSources, lastReport, reflect } from './reflect.js';
 import type { ModelRunner } from './reflect.js';
 import { schedule } from './schedule.js';
 import type { ScheduleDeps } from './schedule.js';
@@ -30,8 +30,8 @@ const commands: Record<string, { required: string[]; optional: string[]; bool?: 
   approve: { required: ['workspace'], optional: ['id', 'ids'] },
   retire: { required: ['workspace'], optional: ['id', 'ids'] },
   reject: { required: ['workspace'], optional: ['id', 'ids', 'note'] },
-  reflect: { required: [], optional: ['days'], bool: ['dry-run', 'last'] },
-  schedule: { required: [], optional: ['every'], bool: ['off', 'status'] },
+  reflect: { required: [], optional: ['days', 'sources', 'projects'], bool: ['dry-run', 'last'] },
+  schedule: { required: [], optional: ['every', 'sources', 'projects'], bool: ['off', 'status'] },
   learn: { required: ['workspace'], optional: ['source', 'limit'] },
   history: { required: ['workspace'], optional: ['limit'] }
 };
@@ -64,6 +64,8 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   if (['approve', 'retire', 'reject'].includes(command) && ('id' in args) === ('ids' in args)) throw new UsageError('give exactly one of --id or --ids');
   if ('ids' in args && !/^[0-9a-f]{16}(,[0-9a-f]{16})*$/.test(args.ids!)) throw new UsageError('invalid --ids');
   if ('days' in args && (!/^\d+$/.test(args.days!) || Number(args.days) < 1 || Number(args.days) > 30)) throw new UsageError('invalid --days');
+  if ('sources' in args && !args.sources!.split(',').every(x => ['claude-code', 'cursor', 'codex', 'harness'].includes(x))) throw new UsageError('invalid --sources');
+  if ('projects' in args && !args.projects!.split(',').every(x => isAbsolute(x))) throw new UsageError('invalid --projects');
   if (command === 'schedule' && ['every', 'off', 'status'].filter(k => k in args).length !== 1) throw new UsageError('give exactly one of --every, --off or --status');
   if (command === 'history' && 'limit' in args && Number(args.limit) > 200) throw new UsageError('invalid --limit');
   return { command, args };
@@ -77,10 +79,11 @@ function execute(command: string, args: Record<string, string>, run: CliRunner, 
     try { return { ok: true, ...migrateLegacy(dir) }; }
     catch (error) { throw error instanceof MigrationRefused ? new UsageError(error.message) : error; }
   }
-  if (command === 'schedule') return { ok: true, ...schedule(dir, { every: args.every, off: 'off' in args, status: 'status' in args }, options.schedule) };
+  if (command === 'schedule') return { ok: true, ...schedule(dir, { every: args.every, sources: args.sources, projects: args.projects, off: 'off' in args, status: 'status' in args }, options.schedule) };
   if (command === 'reflect') {
     if ('last' in args) return { ok: true, ...lastReport(dir) };
-    return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model }) };
+    return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model,
+      filter: { sources: args.sources ? args.sources.split(',') : defaultSources, projects: args.projects?.split(',') } }) };
   }
   let workspace: string;
   try { workspace = realpathSync(resolve(args.workspace!)); } catch { throw new Error('workspace must be an existing directory'); }

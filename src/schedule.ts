@@ -10,9 +10,9 @@ export interface ScheduleDeps { plistDir?: string; launchctl?: Launchctl; platfo
 const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const defaultLaunchctl: Launchctl = args => { execFileSync('launchctl', args, { stdio: 'ignore', timeout: 30000 }); };
 
-export function plistContent(brainDir: string, seconds: number): string {
+export function plistContent(brainDir: string, seconds: number, extra: string[] = []): string {
   const path = [dirname(process.execPath), join(homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'].join(':');
-  const args = [process.execPath, join(brainDir, 'bin', 'cli.js'), 'reflect', '--brain-dir', brainDir];
+  const args = [process.execPath, join(brainDir, 'bin', 'cli.js'), 'reflect', '--brain-dir', brainDir, '--days', String(Math.min(30, Math.ceil(seconds / 86400))), ...extra];
   const log = join(brainDir, 'reflect', 'launchd.log');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,7 +32,7 @@ export function plistContent(brainDir: string, seconds: number): string {
 }
 
 /** Install (`every` like "48h"), remove (`off`) or report on the reflect LaunchAgent. */
-export function schedule(brainDir: string, opts: { every?: string | undefined; off?: boolean; status?: boolean }, deps: ScheduleDeps = {}): Record<string, unknown> {
+export function schedule(brainDir: string, opts: { every?: string | undefined; off?: boolean; status?: boolean; sources?: string | undefined; projects?: string | undefined }, deps: ScheduleDeps = {}): Record<string, unknown> {
   if ((deps.platform ?? process.platform) !== 'darwin') throw new Error('schedule needs macOS (launchd)');
   const plist = join(deps.plistDir ?? join(homedir(), 'Library', 'LaunchAgents'), `${LABEL}.plist`);
   const launchctl = deps.launchctl ?? defaultLaunchctl;
@@ -51,10 +51,12 @@ export function schedule(brainDir: string, opts: { every?: string | undefined; o
   const match = /^(\d+)h$/.exec(opts.every ?? '');
   const hours = match ? Number(match[1]) : 0;
   if (hours < 1 || hours > 720) throw new Error('--every must look like 48h (1 to 720 hours)');
+  const cli = join(brainDir, 'bin', 'cli.js');
+  if (!existsSync(cli)) throw new Error(`${cli} not found; run install-local first`);
   mkdirSync(dirname(plist), { recursive: true });
   mkdirSync(join(brainDir, 'reflect'), { recursive: true, mode: 0o700 });
   quietly(['bootout', `${domain}/${LABEL}`]);
-  writeFileSync(plist, plistContent(brainDir, hours * 3600), { mode: 0o644 });
-  launchctl(['bootstrap', domain, plist]);
+  writeFileSync(plist, plistContent(brainDir, hours * 3600, [...(opts.sources ? ['--sources', opts.sources] : []), ...(opts.projects ? ['--projects', opts.projects] : [])]), { mode: 0o644 });
+  try { launchctl(['bootstrap', domain, plist]); } catch (error) { rmSync(plist, { force: true }); throw error; }
   return { scheduled: true, everySeconds: hours * 3600, plist };
 }
