@@ -4,7 +4,6 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrainStore, containsSecret, defaultBrainDirectory } from './brain.js';
-import { brainSpaceFor } from './brain-spaces.js';
 import { contextText, resolveWorkspace } from './brain-mcp.js';
 
 export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }
@@ -113,11 +112,10 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   if (typeof candidate !== 'string' || candidate === '') throw new Error('missing workspace');
   const brainDirectory = options.brainDirectory ?? defaultBrainDirectory();
   const workspace = resolveWorkspace(candidate);
-  const space = brainSpaceFor(workspace, brainDirectory);
   if (event === 'session-start') {
-    const store = new BrainStore(brainDirectory, space);
+    const store = new BrainStore(brainDirectory);
     try {
-      const text = contextText(store, space, workspace) + '\n' + RECORD_LINE;
+      const text = contextText(store, workspace) + '\n' + RECORD_LINE;
       return source === 'claude-code'
         ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } })
         : JSON.stringify({ additional_context: text });
@@ -141,7 +139,7 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   let id = typeof sessionId === 'string' && sessionId !== '' ? sessionId
     : sha(JSON.stringify([typeof transcript === 'string' ? transcript : workspace, new Date(now).toISOString().slice(0, 10)]));
   if (id.length > 190) id = sha(id);
-  const store = new BrainStore(brainDirectory, space);
+  const store = new BrainStore(brainDirectory);
   try {
     store.record({ project: workspace, source, key: red('session:' + id), title: red(title),
       summary: red(`Auto-captured at session end. Files changed: ${files.length}.`), files: files.map(red),

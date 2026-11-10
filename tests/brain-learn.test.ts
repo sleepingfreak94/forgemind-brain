@@ -89,7 +89,7 @@ test('github edge cases', () => {
 });
 
 let counter = 0;
-function cli(run: CliRunner, extra: string[] = [], map = true) {
+function cli(run: CliRunner, extra: string[] = []) {
   const base = join(root, `c${counter++}`), ws = join(base, 'ws'), brain = join(base, 'brain');
   mkdirSync(ws, { recursive: true });
   const exec = (args: string[], r?: CliRunner) => {
@@ -97,7 +97,6 @@ function cli(run: CliRunner, extra: string[] = [], map = true) {
     const code = runBrainCli([...args, '--brain-dir', brain], { write: t => { out += t; } }, r ? { run: r } : {});
     return { code, json: JSON.parse(out) as Record<string, any> };
   };
-  if (map) exec(['map', '--workspace', ws, '--space', 'personal']);
   return { ws, exec, learn: () => exec(['learn', '--workspace', ws, ...extra], run) };
 }
 const good: CliRunner = (tool, a) => tool === 'git' ? git(five).run(a) : gh(prs)(a);
@@ -125,20 +124,10 @@ test('cli --source git never calls gh', () => {
   const c = cli((tool, a) => { tools.push(tool); return tool === 'git' ? git(five).run(a) : gh(prs)(a); }, ['--source', 'git']);
   assert.equal(c.learn().code, 0); assert.ok(tools.length > 0 && tools.every(t => t === 'git'));
 });
-test('cli usage errors and unmapped workspace', () => {
+test('cli usage errors', () => {
   let calls = 0; const counting: CliRunner = () => { calls++; return ''; };
   assert.equal(cli(counting, ['--source', 'svn']).learn().code, 2);
   assert.equal(cli(counting, ['--limit', '0']).learn().code, 2);
   assert.equal(cli(counting, ['--limit', 'x']).learn().code, 2);
   assert.equal(calls, 0);
-});
-test('cli learn works on an unmapped workspace', () => {
-  const c = cli(good, [], false); const r = c.learn();
-  assert.equal(r.code, 0); assert.deepEqual(r.json.skipped, []); assert.ok(r.json.proposed.length > 0);
-  const list = c.exec(['list', '--workspace', c.ws]);
-  assert.equal(list.json.space, 'personal');
-  for (const id of r.json.proposed) {
-    const e = list.json.entries.find((x: any) => x.id === id);
-    assert.equal(e.status, 'proposed'); assert.equal(e.project, c.ws);
-  }
 });

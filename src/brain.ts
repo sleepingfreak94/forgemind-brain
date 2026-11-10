@@ -1,11 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, closeSync, copyFileSync, mkdirSync, openSync, realpathSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { privatePath } from './validation.js';
 
-export type BrainSpace = 'personal' | 'company';
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';
 export type BrainStatus = 'proposed' | 'approved' | 'rejected' | 'retired';
 export interface BrainEntry {
@@ -19,7 +18,6 @@ export interface BrainHistory {
   outcome: string; evidence: string[]; at: number;
 }
 const sources: readonly string[] = ['harness', 'claude-code', 'cursor'];
-const spaces: readonly string[] = ['personal', 'company'];
 const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern'];
 const statuses: readonly string[] = ['proposed', 'approved', 'rejected', 'retired'];
 /** The generic key/token/secret/password pattern also refuses harmless text such as "token: use refresh flow"; that is intended. */
@@ -27,7 +25,7 @@ const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bs
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)\s*[:=]/i];
 
 /** Local owner state; never a directory under the repository. */
-export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind', 'brain'); }
+export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
 export function containsSecret(value: string): boolean { return secrets.some(pattern => pattern.test(value)); }
 function noSecret(value: string): void {
@@ -44,18 +42,27 @@ function absolute(value: unknown): string {
 }
 const order = 'ORDER BY created_at, id';
 
-/** Owner-only persistence of reviewed knowledge; one isolated database per space. */
+/** Old layout: <dir>/brain/personal/brain.sqlite. Copy it once (the original stays); company/ is never read. */
+function migrateLegacy(directory: string, path: string): void {
+  if (existsSync(path)) return;
+  const legacy = join(directory, 'brain', 'personal', 'brain.sqlite');
+  if (!existsSync(legacy)) return;
+  privatePath(legacy, false);
+  const tmp = `${path}.migrating`;
+  copyFileSync(legacy, tmp); chmodSync(tmp, 0o600); renameSync(tmp, path);
+  process.stderr.write(`forgemind brain: copied ${legacy} to ${path}\n`);
+}
+
+/** Owner-only persistence of reviewed knowledge; one database file, `<directory>/brain.sqlite`. */
 export class BrainStore {
   private readonly db: DatabaseSync;
-  constructor(directory: string, space: BrainSpace) {
-    if (typeof space !== 'string' || !spaces.includes(space)) throw new Error('invalid brain space');
+  constructor(directory: string) {
     if (typeof directory !== 'string' || !isAbsolute(directory)) throw new Error('brain storage must be absolute');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (realpathSync(directory) !== directory) throw new Error('brain storage must be canonical');
     privatePath(directory, true);
-    const home = join(directory, space);
-    mkdirSync(home, { mode: 0o700, recursive: true }); privatePath(home, true);
-    const path = join(home, 'brain.sqlite');
+    const path = join(directory, 'brain.sqlite');
+    migrateLegacy(directory, path);
     try { closeSync(openSync(path, 'wx', 0o600)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     privatePath(path, false);
