@@ -1,12 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { renameSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runBrainCli } from '../src/cli.js';
 import { BrainStore } from '../src/brain.js';
 import { acceptAdr, createAdr, createRecipe } from '../src/documents.js';
 import { reflect } from '../src/reflect.js';
+import { DatabaseSync } from 'node:sqlite';
 import { exportVault } from '../src/vault.js';
 import { safeName } from '../src/vault-notes.js';
 
@@ -65,8 +66,8 @@ test('notes, frontmatter and wikilinks', () => {
   assert.match(index, /projects: 2/); assert.match(index, /\[\[Projects\/beta\]\]/); assert.match(index, /Generated /);
   const session = read(to, `Sessions/${files(to, 'Sessions').find(f => f.includes('second'))}`);
   assert.match(session, /- Source: claude-code/); assert.match(session, /model: m1/); assert.match(session, /toolErrors: 2/); assert.match(session, /`src\/a.ts`/);
-  assert.ok(!/<script/i.test(session)); // stripped
-  assert.match(session, /## Prompts/); assert.match(session, /no, with ``` fence/);
+  assert.match(session, /## Prompts/); assert.match(session, /first <script>alert\(1\)<\/script> prompt/); // exact, inside a fence
+  assert.match(session, /no, with ``` fence/);
   const withProposed = exported(s.brain, join(s.base, 'v2'), { includeProposed: true }) as any;
   assert.equal(withProposed.counts.lessons, 3);
 });
@@ -75,7 +76,7 @@ test('YAML escaping keeps a hostile title on one line', () => {
   const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
   const note = read(to, `Sessions/${files(to, 'Sessions').find(f => f.includes('hi'))}`);
   const fm = note.split('---\n')[1]!;
-  assert.match(fm, /title: "He said \\"hi\\": a\\nb"/);
+  assert.match(fm, /title: "He said \\"hi\\": a b"/);
   for (const line of fm.trimEnd().split('\n')) assert.match(line, /^[a-z]+: /);
 });
 
@@ -113,10 +114,10 @@ test('regeneration keeps .obsidian and code, drops stale notes, and sets private
   const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
   mkdirSync(join(to, '.obsidian')); writeFileSync(join(to, '.obsidian/app.json'), '{}');
   mkdirSync(join(to, 'code/repo'), { recursive: true }); writeFileSync(join(to, 'code/repo/g.md'), 'g');
-  writeFileSync(join(to, 'stale.md'), 's');
+  writeFileSync(join(to, 'Sessions', 'stale.md'), 's');
   exported(s.brain, to);
   assert.equal(read(to, '.obsidian/app.json'), '{}'); assert.equal(read(to, 'code/repo/g.md'), 'g');
-  assert.ok(!existsSync(join(to, 'stale.md')));
+  assert.ok(!existsSync(join(to, 'Sessions', 'stale.md')));
   assert.deepEqual(readdirSync(s.base).filter(f => f.startsWith('v.')), []);
   for (const rel of ['', 'Sessions', 'Projects']) assert.equal(statSync(join(to, rel)).mode & 0o777, 0o700);
   for (const rel of ['index.md', '.forgemind-vault', `Projects/alpha.md`]) assert.equal(statSync(join(to, rel)).mode & 0o777, 0o600);
@@ -175,4 +176,102 @@ test('reflect refreshes the vault, and a failed refresh never fails reflect', ()
   // No vault at all: no key.
   const t = seed();
   assert.equal('vault' in (reflect(t.brain, { days: 2, run: model }) as any), false);
+});
+
+test('--no-prompts: no note holds prompt text, even through a prompt-derived title', () => {
+  const s = seed(), store = new BrainStore(s.brain);
+  store.record({ project: s.pa, source: 'claude-code', key: 'hook1', title: 'SECRETPROMPT fix the login', summary: '1 prompts', files: [], outcome: 'ok',
+    evidence: ['hook:claude-code'], prompts: ['SECRETPROMPT fix the login'], signals }); store.close();
+  const to = join(s.base, 'v'); exported(s.brain, to, { prompts: false });
+  for (const f of readdirSync(to, { recursive: true }).map(String).filter(f => f.endsWith('.md'))) {
+    assert.ok(!read(to, f).includes('SECRETPROMPT') && !f.includes('SECRETPROMPT'), f);
+    assert.ok(!read(to, f).includes('first <script>'), f);
+  }
+  assert.ok(files(to, 'Sessions').some(f => f.includes('claude-code session')));
+  exported(s.brain, join(s.base, 'v2'));
+  assert.ok(files(join(s.base, 'v2'), 'Sessions').some(f => f.includes('SECRETPROMPT')));
+});
+
+test('regeneration keeps every user entry across two exports', () => {
+  const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
+  writeFileSync(join(to, 'mine.md'), 'm');
+  for (const d of ['Templates', '.trash', '.obsidian', 'code']) { mkdirSync(join(to, d)); writeFileSync(join(to, d, 'f'), d); }
+  exported(s.brain, to); exported(s.brain, to);
+  assert.equal(read(to, 'mine.md'), 'm');
+  for (const d of ['Templates', '.trash', '.obsidian', 'code']) assert.equal(read(to, `${d}/f`), d);
+  assert.deepEqual(readdirSync(s.base).filter(f => f.startsWith('v.')), []);
+});
+
+test('HTML cannot survive in unfenced text, including split-tag bypasses', () => {
+  const s = seed(), evil = '<scr<script>ipt>alert(1)</script> <ifr<iframe>ame src=x> <img src=https://x>';
+  const db = new DatabaseSync(join(s.brain, 'brain.sqlite'));
+  db.prepare('UPDATE history SET summary = ?').run(evil);
+  db.prepare("UPDATE documents SET body = body || ?").run(evil);
+  db.prepare('UPDATE entries SET reason = ?').run(evil);
+  db.close();
+  const to = join(s.base, 'v'); exported(s.brain, to, { prompts: false });
+  for (const f of readdirSync(to, { recursive: true }).map(String).filter(f => f.endsWith('.md'))) {
+    const body = read(to, f).replace(/^---\n[\s\S]*?\n---\n/, '');
+    assert.ok(!/<[a-z/]/i.test(body), `${f}: ${body.match(/<[a-z/][^\n]*/i)}`);
+  }
+  assert.match(read(to, `Sessions/${files(to, 'Sessions')[0]}`), /&lt;img src=https:\/\/x&gt;/);
+});
+
+test('case-insensitive project name collisions are disambiguated', () => {
+  const s = seed(), store = new BrainStore(s.brain);
+  for (const [p, k] of [[join(s.base, 'a', 'Foo'), 'x1'], [join(s.base, 'b', 'foo'), 'x2']] as const)
+    store.record({ project: p, source: 'codex', key: k, title: 't', summary: '', files: [], outcome: 'ok', evidence: [] });
+  store.close();
+  const to = join(s.base, 'v'); exported(s.brain, to);
+  const foo = files(to, 'Projects').filter(f => f.toLowerCase().startsWith('foo'));
+  assert.equal(foo.length, 2); assert.equal(new Set(foo.map(f => f.toLowerCase())).size, 2);
+  assert.ok(foo.every(f => /foo [0-9a-f]{6}\.md/i.test(f)));
+});
+
+test('cloud warning covers Library/CloudStorage (path match)', () => {
+  const s = seed();
+  assert.equal(((exported(s.brain, join(s.base, 'Google Drive', 'v')) as any).warnings as string[]).length, 1);
+  assert.equal(((exported(s.brain, join(s.base, 'OneDrive', 'v')) as any).warnings as string[]).length, 1);
+});
+
+test('interrupted swap is restored, stale temp dirs are cleaned, a held lock refuses', () => {
+  const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
+  writeFileSync(join(to, 'mine.md'), 'm');
+  renameSync(to, `${to}.old-1-1`); mkdirSync(`${to}.tmp-1-1`); // crash after the first rename
+  assert.ok(!existsSync(to));
+  const r = exported(s.brain, to) as any;
+  assert.ok(r.warnings.some((w: string) => /restored/.test(w)));
+  assert.equal(read(to, 'mine.md'), 'm');
+  assert.deepEqual(readdirSync(s.base).filter(f => f.startsWith('v.')), []);
+  writeFileSync(join(s.brain, 'vault.lock'), '');
+  assert.throws(() => exported(s.brain, to), /in progress/);
+  const rr = reflect(s.brain, { days: 2, run: () => '{"proposals":[]}' }) as any; // refresh fails softly while locked
+  assert.equal(rr.vault.refreshed, false);
+});
+
+test('caps drop lessons, recipes and ADRs before naming, so no hub links a dropped note', () => {
+  const s = seed(), to = join(s.base, 'v');
+  const r = exported(s.brain, to, { caps: { sessions: 2000, perProject: 50, notes: 9 } }) as any;
+  assert.ok(r.counts.notes <= 9 && r.truncated);
+  const notes = readdirSync(to, { recursive: true }).map(String).filter(f => f.endsWith('.md'));
+  assert.equal(notes.length, r.counts.notes);
+  const names = new Set(notes.map(f => f.replace(/\.md$/, '')));
+  for (const f of notes) for (const m of read(to, f).matchAll(/\[\[([^\]]+)\]\]/g)) assert.ok(names.has(m[1]!), `${f} links dropped ${m[1]}`);
+  assert.equal(r.counts.adrs + r.counts.recipes + r.counts.lessons + r.counts.sessions + r.counts.projects + 2, r.counts.notes);
+});
+
+test('hook captures without prompts are hidden and counted', () => {
+  const s = seed(), store = new BrainStore(s.brain);
+  store.record({ project: s.pa, source: 'claude-code', key: 'h-empty', title: 'noise', summary: 's', files: [], outcome: 'ok', evidence: ['hook:claude-code'] }); store.close();
+  const r = exported(s.brain, join(s.base, 'v')) as any;
+  assert.equal(r.hidden, 1); assert.equal(r.counts.sessions, 3);
+});
+
+test('session titles are capped', () => {
+  const s = seed(), store = new BrainStore(s.brain);
+  store.record({ project: s.pa, source: 'cursor', key: 'long', title: 'T'.repeat(300), summary: '', files: [], outcome: 'ok', evidence: [] }); store.close();
+  const to = join(s.base, 'v'); exported(s.brain, to);
+  const f = files(to, 'Sessions').find(f => f.includes('TTTT'))!;
+  const note = read(to, `Sessions/${f}`);
+  assert.ok(!note.includes('T'.repeat(121)));
 });
