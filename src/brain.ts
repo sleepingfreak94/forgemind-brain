@@ -1,11 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { privatePath } from './database.js';
+import { privatePath } from './validation.js';
 
-export type BrainSpace = 'personal' | 'company';
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';
 export type BrainStatus = 'proposed' | 'approved' | 'rejected' | 'retired';
 export interface BrainEntry {
@@ -13,13 +12,14 @@ export interface BrainEntry {
   reason: string; status: BrainStatus; createdAt: number; reviewedAt: number | null; reviewNote: string | null;
 }
 
-export type BrainSource = 'harness' | 'claude-code' | 'cursor';
+export type BrainSource = 'harness' | 'claude-code' | 'cursor' | 'codex';
+/** Sources a client may name with --source (harness is only old history). */
+export const clientSources = ['claude-code', 'cursor', 'codex'] as const;
 export interface BrainHistory {
   id: string; project: string; source: BrainSource; title: string; summary: string; files: string[];
   outcome: string; evidence: string[]; at: number;
 }
-const sources: readonly string[] = ['harness', 'claude-code', 'cursor'];
-const spaces: readonly string[] = ['personal', 'company'];
+const sources: readonly string[] = ['harness', ...clientSources];
 const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern'];
 const statuses: readonly string[] = ['proposed', 'approved', 'rejected', 'retired'];
 /** The generic key/token/secret/password pattern also refuses harmless text such as "token: use refresh flow"; that is intended. */
@@ -27,7 +27,7 @@ const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bs
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)\s*[:=]/i];
 
 /** Local owner state; never a directory under the repository. */
-export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind', 'brain'); }
+export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
 export function containsSecret(value: string): boolean { return secrets.some(pattern => pattern.test(value)); }
 function noSecret(value: string): void {
@@ -44,18 +44,17 @@ function absolute(value: unknown): string {
 }
 const order = 'ORDER BY created_at, id';
 
-/** Owner-only persistence of reviewed knowledge; one isolated database per space. */
+/** Owner-only persistence of reviewed knowledge; one database file, `<directory>/brain.sqlite`. */
 export class BrainStore {
   private readonly db: DatabaseSync;
-  constructor(directory: string, space: BrainSpace) {
-    if (typeof space !== 'string' || !spaces.includes(space)) throw new Error('invalid brain space');
+  constructor(directory: string) {
     if (typeof directory !== 'string' || !isAbsolute(directory)) throw new Error('brain storage must be absolute');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (realpathSync(directory) !== directory) throw new Error('brain storage must be canonical');
     privatePath(directory, true);
-    const home = join(directory, space);
-    mkdirSync(home, { mode: 0o700, recursive: true }); privatePath(home, true);
-    const path = join(home, 'brain.sqlite');
+    const path = join(directory, 'brain.sqlite');
+    if (!existsSync(path) && existsSync(join(directory, 'brain', 'personal', 'brain.sqlite')))
+      throw new Error('legacy brain found; run `npm run brain -- migrate` after switching all configs');
     try { closeSync(openSync(path, 'wx', 0o600)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     privatePath(path, false);
@@ -65,10 +64,13 @@ export class BrainStore {
     }
     this.db = new DatabaseSync(path, { timeout: 1000, enableForeignKeyConstraints: true });
     try {
-      const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-      if (version !== 0 && version !== 1 && version !== 2) throw new Error('unsupported brain schema');
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;');
       this.transaction(() => {
+        // Read the version under the write lock so two opens cannot both run the upgrade.
+        const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
+        if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('unsupported brain schema');
+        // Version 2 history only allows three sources; rebuild it so 'codex' fits.
+        if (version === 2) this.db.exec('ALTER TABLE history RENAME TO history_v2');
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY,
             kind TEXT NOT NULL CHECK(kind IN ('convention','lesson','decision','pattern')),
@@ -77,10 +79,11 @@ export class BrainStore {
             created_at INTEGER NOT NULL, reviewed_at INTEGER, review_note TEXT) STRICT;
           CREATE TABLE IF NOT EXISTS audit (sequence INTEGER PRIMARY KEY, action TEXT NOT NULL, entry TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
           CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
-            source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor')), title TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('harness','claude-code','cursor','codex')), title TEXT NOT NULL,
             summary TEXT NOT NULL, files TEXT NOT NULL, outcome TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
         `);
-        if (version !== 2) this.db.exec('PRAGMA user_version = 2');
+        if (version === 2) this.db.exec('INSERT INTO history SELECT * FROM history_v2; DROP TABLE history_v2');
+        if (version !== 3) this.db.exec('PRAGMA user_version = 3');
       });
     } catch (error) { this.db.close(); throw error; }
   }

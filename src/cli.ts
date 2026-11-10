@@ -2,11 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { BrainStore, defaultBrainDirectory } from '../memory/brain.js';
-import type { BrainEntry, BrainKind, BrainSpace, BrainStatus } from '../memory/brain.js';
-import { brainSpaceFor, mapBrainSpace } from '../memory/brain-spaces.js';
-import { learnFromGit, learnFromGitHub } from '../memory/brain-learn.js';
-import type { BrainProposal } from '../memory/brain-learn.js';
+import { BrainStore, defaultBrainDirectory } from './brain.js';
+import type { BrainEntry, BrainKind, BrainStatus } from './brain.js';
+import { MigrationRefused, migrateLegacy } from './migrate.js';
+import { learnFromGit, learnFromGitHub } from './brain-learn.js';
+import type { BrainProposal } from './brain-learn.js';
 
 class UsageError extends Error {}
 
@@ -19,7 +19,7 @@ const defaultRunner: CliRunner = (tool, args, cwd) => {
 };
 
 const commands: Record<string, { required: string[]; optional: string[] }> = {
-  map: { required: ['workspace', 'space'], optional: [] },
+  migrate: { required: [], optional: [] },
   list: { required: ['workspace'], optional: ['status'] },
   add: { required: ['workspace', 'kind', 'text', 'reason'], optional: ['evidence', 'scope'] },
   show: { required: ['workspace', 'id'], optional: [] },
@@ -49,8 +49,7 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
     args[key] = value;
   }
   for (const key of spec.required) if (!(key in args)) throw new UsageError(`missing --${key}`);
-  if ('space' in args && args.space !== 'personal' && args.space !== 'company') throw new UsageError('invalid --space');
-  if ('scope' in args && args.scope !== 'project' && args.scope !== 'space') throw new UsageError('invalid --scope');
+  if ('scope' in args && args.scope !== 'project' && args.scope !== 'global') throw new UsageError('invalid --scope');
   if ('status' in args && !['proposed', 'approved', 'rejected', 'retired'].includes(args.status!)) throw new UsageError('invalid --status');
   if ('kind' in args && !['convention', 'lesson', 'decision', 'pattern'].includes(args.kind!)) throw new UsageError('invalid --kind');
   if ('source' in args && !['git', 'github', 'all'].includes(args.source!)) throw new UsageError('invalid --source');
@@ -61,11 +60,13 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
 
 function execute(command: string, args: Record<string, string>, run: CliRunner): unknown {
   const dir = resolve(args['brain-dir'] ?? defaultBrainDirectory());
+  if (command === 'migrate') {
+    try { return { ok: true, ...migrateLegacy(dir) }; }
+    catch (error) { throw error instanceof MigrationRefused ? new UsageError(error.message) : error; }
+  }
   let workspace: string;
   try { workspace = realpathSync(resolve(args.workspace!)); } catch { throw new Error('workspace must be an existing directory'); }
-  if (command === 'map') { mapBrainSpace(workspace, args.space as BrainSpace, dir); return { ok: true }; }
-  const space = brainSpaceFor(workspace, dir);
-  const store = new BrainStore(dir, space);
+  const store = new BrainStore(dir);
   try {
     const visible = (id: string): BrainEntry => {
       const entry = store.list().find(e => e.id === id && (e.project === null || e.project === workspace));
@@ -76,12 +77,12 @@ function execute(command: string, args: Record<string, string>, run: CliRunner):
       case 'list': {
         const entries = store.list(args.status ? { status: args.status as BrainStatus } : {})
           .filter(e => e.project === null || e.project === workspace);
-        return { space, entries };
+        return { entries };
       }
       case 'add':
         return { id: store.propose({ kind: args.kind as BrainKind, text: args.text!, reason: args.reason!,
-          evidence: args.evidence ? [args.evidence] : [], project: args.scope === 'space' ? null : workspace }) };
-      case 'history': return { space, history: store.history(workspace, args.limit ? Number(args.limit) : 20) };
+          evidence: args.evidence ? [args.evidence] : [], project: args.scope === 'global' ? null : workspace }) };
+      case 'history': return { history: store.history(workspace, args.limit ? Number(args.limit) : 20) };
       case 'show': return { entry: visible(args.id!) };
       case 'approve': visible(args.id!); store.approve(args.id!); return { ok: true };
       case 'retire': visible(args.id!); store.retire(args.id!); return { ok: true };
