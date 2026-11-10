@@ -1,80 +1,30 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BrainStore, clientSources, containsSecret, defaultBrainDirectory } from './brain.js';
+import { BrainStore, clientSources, containsSecret, defaultBrainDirectory, redactSecrets } from './brain.js';
 import { contextText, resolveWorkspace } from './brain-mcp.js';
+import { reflectReminder } from './reflect-chat.js';
+import type { ScheduleDeps } from './schedule.js';
+import { readTranscript } from './transcript.js';
 
-export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }
+export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[]; schedule?: ScheduleDeps }
 
 const MAX_INPUT = 1048576;
-const MAX_TRANSCRIPT = 20971520;
+const MAX_PROMPT = 4000, MAX_PROMPTS = 50, MAX_PROMPT_TOTAL = 20000;
 const TITLE_PROMPT_CAP = 160;
 const MAX_FILES = 200;
-const RECORD_LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
+const RECORD_LINE = 'Before you finish, call the forgemind-brain tools brain_record (what worked and what failed) and brain_recipe (plan, the exact prompts, dead ends, verification, outcome). Record significant decisions with brain_adr.';
 
 const red = (value: string): string => containsSecret(value) ? '[redacted]' : value;
+// Cutting redacted text can create a new match (e.g. a cut AKIA run), so re-redact until stable; give up rather than store a secret.
+function cut(text: string, max: number): string {
+  let out = redactSecrets(text).slice(0, max);
+  for (let i = 0; i < 3 && containsSecret(out); i++) out = redactSecrets(out).slice(0, max);
+  return containsSecret(out) ? '[redacted]' : out;
+}
 const sha = (value: string): string => createHash('sha256').update(value).digest('hex');
-
-function userText(obj: unknown): string | undefined {
-  if (!obj || typeof obj !== 'object') return undefined;
-  const o = obj as Record<string, unknown>;
-  let content: unknown;
-  if (o.type === 'user' && o.message && typeof o.message === 'object' && (o.message as Record<string, unknown>).role === 'user') {
-    content = (o.message as Record<string, unknown>).content;
-  } else if (o.role === 'user') {
-    content = o.content ?? (o.message && typeof o.message === 'object' ? (o.message as Record<string, unknown>).content : undefined);
-  } else return undefined;
-  let text = '';
-  if (typeof content === 'string') text = content;
-  else if (Array.isArray(content)) {
-    text = content.filter((p): p is { type: string; text: string } => !!p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string')
-      .map(p => p.text).join(' ');
-  }
-  text = text.replace(/\s+/g, ' ').trim();
-  return text === '' ? undefined : text;
-}
-
-export function cleanPrompt(text: string): string {
-  let t = String(text).replace(/<timestamp\b[^>]*>[\s\S]*?<\/timestamp>/gi, ' ');
-  const q = /<user_query\b[^>]*>([\s\S]*?)<\/user_query>/i.exec(t);
-  if (q) t = q[1] ?? '';
-  const tag = /^\s*<\/?[A-Za-z][\w:.-]*(?:\s[^>]*)?\/?>/;
-  while (tag.test(t)) t = t.replace(tag, '');
-  return t.replace(/\s+/g, ' ').trim();
-}
-
-function readFirstPrompt(path: unknown): string | undefined {
-  if (typeof path !== 'string' || path === '' || !isAbsolute(path)) return undefined;
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, 'r');
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_TRANSCRIPT) return undefined;
-    const chunk = Buffer.alloc(65536);
-    let pending = '', position = 0;
-    while (position < stat.size) {
-      const n = readSync(fd, chunk, 0, chunk.length, position);
-      if (n <= 0) break;
-      position += n;
-      pending += chunk.subarray(0, n).toString('utf8');
-      const lines = pending.split('\n');
-      pending = lines.pop() ?? '';
-      for (const line of lines) {
-        const text = parseLine(line);
-        if (text !== undefined) return text;
-      }
-    }
-    return parseLine(pending);
-  } catch { return undefined; }
-  finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* ignore */ } } }
-}
-
-function parseLine(line: string): string | undefined {
-  if (line.trim() === '') return undefined;
-  try { return userText(JSON.parse(line)); } catch { return undefined; }
-}
 
 function defaultChangedFiles(workspace: string): string[] {
   try {
@@ -115,16 +65,16 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   if (event === 'session-start') {
     const store = new BrainStore(brainDirectory);
     try {
-      const text = contextText(store, workspace) + '\n' + RECORD_LINE;
+      const due = reflectReminder(brainDirectory, source, (options.now ?? Date.now)(), options.schedule, workspace);
+      const text = contextText(store, workspace) + (due ? '\n' + due : '') + '\n' + RECORD_LINE;
       return source === 'claude-code'
         ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } })
         : JSON.stringify({ additional_context: text });
     } finally { store.close(); }
   }
   const transcript = data.transcript_path;
-  const prompt = readFirstPrompt(transcript);
-  const cleaned = prompt === undefined ? '' : cleanPrompt(prompt);
-  if (cleaned === '') return '';
+  const capture = readTranscript(transcript);
+  const real = capture?.prompts ?? [];
   const rawFiles = (options.changedFiles ?? defaultChangedFiles)(workspace);
   const seen = new Set<string>();
   for (const f of rawFiles) {
@@ -135,20 +85,36 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   }
   const files = [...seen].slice(0, MAX_FILES);
   const now = (options.now ?? Date.now)();
-  const title = 'Session (auto): ' + cleaned.slice(0, TITLE_PROMPT_CAP).trimEnd();
+  if (real.length === 0 && files.length === 0) return '';
+  const prompts: string[] = [];
+  let total = 0;
+  for (const p of real.slice(0, MAX_PROMPTS)) {
+    const text = cut(p, MAX_PROMPT); // redact the whole text first, then cut
+    if (total + text.length > MAX_PROMPT_TOTAL) break; // keep the earliest
+    prompts.push(text); total += text.length;
+  }
+  const raw = capture?.signals;
+  const n = (x: number): number => Math.min(Math.max(0, Math.trunc(x)), 1e9);
+  const signals = raw && { prompts: n(raw.prompts), corrections: n(raw.corrections), correctionIndexes: raw.correctionIndexes.slice(0, MAX_PROMPTS).map(n),
+    model: raw.model === null ? null : cut(raw.model, 100) || null, assistantTurns: n(raw.assistantTurns), toolErrors: n(raw.toolErrors),
+    durationMs: raw.durationMs === null ? null : n(raw.durationMs) };
+  const title = real.length > 0 ? cut(real[0]!.replace(/\s+/g, ' ').trim(), TITLE_PROMPT_CAP).trimEnd() : `Session: ${files.length} files changed`;
+  const summary = `${real.length} prompts, ${signals?.corrections ?? 0} corrections, ${files.length} files changed` + (signals?.model ? `, model ${signals.model}` : '');
   let id = typeof sessionId === 'string' && sessionId !== '' ? sessionId
     : sha(JSON.stringify([typeof transcript === 'string' ? transcript : workspace, new Date(now).toISOString().slice(0, 10)]));
   if (id.length > 190) id = sha(id);
   const store = new BrainStore(brainDirectory);
   try {
-    store.record({ project: workspace, source, key: red('session:' + id), title: red(title),
-      summary: red(`Auto-captured at session end. Files changed: ${files.length}.`), files: files.map(red),
-      outcome: red('session ended'), evidence: ['hook:' + source] });
+    store.record({ project: workspace, source, key: red('session:' + id), title,
+      summary: red(summary), files: files.map(red), outcome: red('session ended'), evidence: ['hook:' + source],
+      prompts: real.length > 0 ? prompts : undefined, signals: real.length > 0 ? signals : undefined });
   } finally { store.close(); }
   return '';
 }
 
 export async function runBrainHookDetailed(argv: string[], input: string, options: BrainHookOptions = {}): Promise<{ stdout: string; error?: string }> {
+  // Set by `brain reflect` around its own claude call so that session is not recorded.
+  if (process.env.FORGEMIND_BRAIN_HOOK === 'off') return { stdout: '' };
   try { return { stdout: await runBrainHookCore(argv, input, options) }; }
   catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -156,7 +122,7 @@ export async function runBrainHookDetailed(argv: string[], input: string, option
   }
 }
 
-export async function runBrainHook(argv: string[], input: string, options?: { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }): Promise<string> {
+export async function runBrainHook(argv: string[], input: string, options?: BrainHookOptions): Promise<string> {
   return (await runBrainHookDetailed(argv, input, options)).stdout;
 }
 

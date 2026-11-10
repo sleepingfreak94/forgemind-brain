@@ -27,8 +27,11 @@ worked and what failed, without you re-explaining it.
    screenshots (for example from a bug bash) and propose new lessons.
 3. **Session end:** a hook records a fallback summary (first prompt and changed files),
    so nothing is lost if the agent forgets.
-4. **You review:** `npm run brain -- list --workspace <project> --status proposed`, then `approve` or
+4. **Reflect:** say "reflect" in any tool to review recent sessions in-chat (`brain_reflect_packet`), or schedule it in the background; see `docs/brain.md`.
+5. **You review:** `npm run brain -- list --workspace <project> --status proposed`, then `approve` or
    `reject`.
+
+**Obsidian view:** `npm run brain -- export --obsidian` writes a read-only vault, so Obsidian's graph shows projects, sessions, ADRs, recipes and lessons ([docs](docs/brain.md#obsidian-view)).
 
 The server also tells agents to record a short summary after they read tickets,
 chats or email (Jira, Slack, Teams, Outlook) through your other MCP connectors.

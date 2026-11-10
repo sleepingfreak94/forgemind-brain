@@ -45,12 +45,12 @@ test('initialize and tools/list', () => {
   assert.equal(init?.result?.protocolVersion, '2025-03-26');
   assert.equal(init?.result?.serverInfo?.name, 'forgemind-brain');
   assert.equal(send({ method: 'initialize', params: { protocolVersion: '1999' } })?.result?.protocolVersion, '2025-06-18');
-  assert.deepEqual(send({ method: 'tools/list' })?.result?.tools?.map(t => t.name), ['brain_context', 'brain_search', 'brain_propose', 'brain_record']);
+  assert.deepEqual(send({ method: 'tools/list' })?.result?.tools?.map(t => t.name), ['brain_context', 'brain_search', 'brain_propose', 'brain_record', 'brain_reflect_packet', 'brain_adr', 'brain_recipe', 'brain_doc']);
 });
 
 test('initialize returns the remember-what-you-read rule', () => {
   const text = send({ method: 'initialize', params: {} })?.result?.instructions ?? '';
-  assert.ok(text.length > 0 && text.length < 600);
+  assert.ok(text.length > 0 && text.length < 1000);
   for (const word of ['brain_context', 'brain_record', 'Jira', 'Confluence', 'never paste', 'attachments', 'brain_propose']) assert.ok(text.includes(word), word);
 });
 
@@ -202,4 +202,16 @@ test('codex is an accepted source and brain_record stores it', async () => {
   assert.equal(JSON.parse(lines[0]!).result.isError, false);
   assert.equal(withStore(s => s.history(workspace)).find(h => h.title === 'Codex work')?.source, 'codex');
   await assert.rejects(runBrainMcp([...argv, '--source', 'gemini'], new PassThrough(), new PassThrough()), /usage/);
+});
+
+test('every tools/call is refused while FORGEMIND_BRAIN_HOOK=off, but initialize and tools/list work', () => {
+  const context = { brainDirectory: join(tmpdir(), 'unused-brain-off'), workspace: tmpdir(), source: 'claude-code' as const };
+  process.env.FORGEMIND_BRAIN_HOOK = 'off';
+  try {
+    const call = handleBrainMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'brain_context', arguments: {} } }, context) as any;
+    assert.equal(call.result.isError, true);
+    assert.match(call.result.content[0].text, /brain disabled for reflect runs/);
+    assert.ok((handleBrainMessage({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, context) as any).result.tools.length > 0);
+    assert.ok((handleBrainMessage({ jsonrpc: '2.0', id: 3, method: 'initialize', params: {} }, context) as any).result.serverInfo);
+  } finally { delete process.env.FORGEMIND_BRAIN_HOOK; }
 });
