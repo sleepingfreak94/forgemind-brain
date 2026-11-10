@@ -59,11 +59,11 @@ test('attachments: search shows stored paths, context shows only a count', () =>
   const r = call('brain_record', { title: 'Bug bash checkout', summary: 'checkout button misaligned', outcome: 'filed', attachments: [shot, shot] });
   assert.equal(r.isError, false);
   const found = call('brain_search', { query: 'checkout misaligned' });
-  assert.match(found.text, /\[attachments: [^\]]*1-before\.png, [^\]]*2-before\.png\]/);
+  assert.match(found.text, /\[attachments: [^\]]*\/1\.png, [^\]]*\/2\.png\]/);
   assert.ok(found.text.length <= 2000);
   const ctx = call('brain_context').text;
   assert.match(ctx, /Bug bash checkout.*\(2 attachments\)/);
-  assert.ok(!ctx.includes('before.png') && ctx.length <= 3200);
+  assert.ok(!ctx.includes('.png') && ctx.length <= 3200);
   assert.match(call('brain_record', { title: 'x', summary: 'y', outcome: 'z', attachments: ['/nope.png'] }).text, /attachment not found/);
 });
 

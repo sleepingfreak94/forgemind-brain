@@ -22,16 +22,23 @@ export function installLocal(builtSrc: string, packageJson: string, target: stri
   if (exists && !isPreviousInstall(target)) throw new Error(`${target} exists and is not a forgemind-brain install; refusing to replace it`);
   const stamp = `${process.pid}-${Date.now()}`;
   const fresh = join(parent, `.bin-new-${stamp}`), old = join(parent, `.bin-old-${stamp}`);
+  let keepOld = false;
   try {
     cpSync(builtSrc, join(fresh, '.'), { recursive: true });
     cpSync(packageJson, join(fresh, 'package.json'));
     // shortcut: two renames leave a moment with no bin/; fine for a single-user tool, use a symlink swap if that ever matters
     if (exists) rename(target, old);
     try { rename(fresh, target); }
-    catch (error) { if (exists) renameSync(old, target); throw error; }
+    catch (error) {
+      if (exists) {
+        try { rename(old, target); }
+        catch { keepOld = true; throw new Error(`install failed and the restore also failed; the previous install is kept at ${old}`); }
+      }
+      throw error;
+    }
   } finally {
     rmSync(fresh, { recursive: true, force: true });
-    rmSync(old, { recursive: true, force: true });
+    if (!keepOld) rmSync(old, { recursive: true, force: true });
   }
 }
 

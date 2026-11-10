@@ -94,7 +94,7 @@ test('history lists this workspace only', () => {
   const all = run(brain, ['history', '--workspace', ws]);
   assert.equal(all.code, 0);
   assert.deepEqual(all.json.history.map((h: any) => h.title), ['with shot', 'second', 'first']);
-  assert.match(all.json.history[0].attachments[0], /1-a\.png$/);
+  assert.match(all.json.history[0].attachments[0], /1\.png$/);
   assert.equal(run(brain, ['history', '--workspace', ws, '--limit', '1']).json.history.length, 1);
   for (const bad of ['0', '201', 'abc']) assert.equal(run(brain, ['history', '--workspace', ws, '--limit', bad]).code, 2);
 });

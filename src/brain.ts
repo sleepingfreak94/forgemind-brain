@@ -2,9 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { copyAttachments, removeAttachments, validateAttachments } from './attachments.js';
+import { closeAttachments, copyAttachments, openAttachments, removeAttachments } from './attachments.js';
 import { dirname, isAbsolute, join } from 'node:path';
-import { privatePath } from './validation.js';
+import { privatePath, strayMigrationFiles } from './validation.js';
 
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';
 export type BrainStatus = 'proposed' | 'approved' | 'rejected' | 'retired';
@@ -60,7 +60,13 @@ export class BrainStore {
       throw new Error('legacy brain found; run `npm run brain -- migrate` after switching all configs');
     try { closeSync(openSync(path, 'wx', 0o600)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    privatePath(path, false);
+    try { privatePath(path, false); }
+    catch (error) {
+      const stray = strayMigrationFiles(directory)[0];
+      if (stray !== undefined && (error as Error).message === 'unsafe memory storage')
+        throw new Error(`unsafe memory storage: ${join(directory, stray)} is a leftover from a crashed migrate and is safe to delete`);
+      throw error;
+    }
     for (const suffix of ['-journal', '-wal', '-shm']) {
       try { privatePath(path + suffix, false); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -132,9 +138,13 @@ export class BrainStore {
     const evidence = (rawEvidence as unknown[]).map(item => limited(item, 0, 300, 'evidence'));
     const id = createHash('sha256').update(JSON.stringify([rawSource, project, key])).digest('hex').slice(0, 16);
     return this.transaction(() => {
-      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) return id; // a repeat never copies files again
-      const sources = validateAttachments(input.attachments);
-      const stored = copyAttachments(this.directory, project, id, sources);
+      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) {
+        if (Array.isArray(input.attachments) && input.attachments.length > 0) throw new Error('already recorded today; attachments not added');
+        return id; // a repeat never copies files again
+      }
+      const sources = openAttachments(input.attachments);
+      let stored: string[];
+      try { stored = copyAttachments(this.directory, project, id, sources); } finally { closeAttachments(sources); }
       try {
         const now = Date.now();
         this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')

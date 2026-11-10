@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, linkSync, mkdirSync, realpathSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { privatePath } from './validation.js';
+import { privatePath, strayMigrationFiles } from './validation.js';
 
 export class MigrationRefused extends Error {}
 
@@ -13,12 +13,21 @@ function count(path: string, table: string): number {
   finally { db.close(); }
 }
 
-/** Copy <dir>/brain/personal/brain.sqlite to <dir>/brain.sqlite. The legacy file is never modified; company/ is never read. */
+/** Copy <dir>/brain/personal/brain.sqlite to <dir>/brain.sqlite. Only a hot journal on the legacy file may be rolled back (normal SQLite recovery), its data is not changed; company/ is never read. */
 export function migrateLegacy(directory: string): { entries: number; history: number } {
   if (!isAbsolute(directory)) throw new Error('brain storage must be absolute');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (realpathSync(directory) !== directory) throw new Error('brain storage must be canonical');
   privatePath(directory, true);
+  // Remove leftovers of a crashed migrate, but never a live one (the pid is in the name).
+  for (const name of strayMigrationFiles(directory)) {
+    const pidOf = Number(/^\.brain\.migrating-(\d+)-/.exec(name)?.[1]);
+    if (Number.isInteger(pidOf)) {
+      try { process.kill(pidOf, 0); continue; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EPERM') continue; /* alive, another user's */ }
+    }
+    try { unlinkSync(join(directory, name)); } catch { /* already gone */ }
+  }
   const target = join(directory, 'brain.sqlite');
   const legacy = join(directory, 'brain', 'personal', 'brain.sqlite');
   if (existsSync(target)) throw new MigrationRefused('brain.sqlite already exists; nothing to migrate');
