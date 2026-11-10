@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { privatePath } from './validation.js';
+import { privatePath, strayMigrationFiles } from './validation.js';
 
 export type BrainKind = 'convention' | 'lesson' | 'decision' | 'pattern';
 export type BrainStatus = 'proposed' | 'approved' | 'rejected' | 'retired';
@@ -57,7 +57,13 @@ export class BrainStore {
       throw new Error('legacy brain found; run `npm run brain -- migrate` after switching all configs');
     try { closeSync(openSync(path, 'wx', 0o600)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    privatePath(path, false);
+    try { privatePath(path, false); }
+    catch (error) {
+      const stray = strayMigrationFiles(directory)[0];
+      if (stray !== undefined && (error as Error).message === 'unsafe memory storage')
+        throw new Error(`unsafe memory storage: ${join(directory, stray)} is a leftover from a crashed migrate and is safe to delete`);
+      throw error;
+    }
     for (const suffix of ['-journal', '-wal', '-shm']) {
       try { privatePath(path + suffix, false); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
