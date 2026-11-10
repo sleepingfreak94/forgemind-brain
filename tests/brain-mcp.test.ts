@@ -45,7 +45,7 @@ test('initialize and tools/list', () => {
   assert.equal(init?.result?.protocolVersion, '2025-03-26');
   assert.equal(init?.result?.serverInfo?.name, 'forgemind-brain');
   assert.equal(send({ method: 'initialize', params: { protocolVersion: '1999' } })?.result?.protocolVersion, '2025-06-18');
-  assert.deepEqual(send({ method: 'tools/list' })?.result?.tools?.map(t => t.name), ['brain_context', 'brain_search', 'brain_propose', 'brain_record', 'brain_adr', 'brain_recipe', 'brain_doc']);
+  assert.deepEqual(send({ method: 'tools/list' })?.result?.tools?.map(t => t.name), ['brain_context', 'brain_search', 'brain_propose', 'brain_record', 'brain_reflect_packet', 'brain_adr', 'brain_recipe', 'brain_doc']);
 });
 
 test('initialize returns the remember-what-you-read rule', () => {

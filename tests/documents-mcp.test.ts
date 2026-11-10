@@ -32,7 +32,7 @@ test('initialize instructions stay short and tell agents about ADRs and recipes'
   const reply = handleBrainMessage({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, { brainDirectory: c.brainDirectory, workspace: c.workspace, source: 'cursor' }) as { result: { instructions: string } };
   const text = reply.result.instructions;
   assert.ok(text.length < 1000, String(text.length));
-  for (const word of ['brain_context first', 'brain_adr', 'ADR-0001', 'brain_recipe', 'exact', 'dead ends', 'Before finishing a task, call brain_record with what worked and what failed', 'brain_record', 'brain_propose', 'attachments']) assert.ok(text.includes(word), word);
+  for (const word of ['brain_context first', 'brain_adr', 'ADR-0001', 'brain_recipe', 'exact', 'dead ends', 'Before finishing a task, call brain_record with what worked and what failed', 'brain_record', 'brain_propose', 'attachments', 'brain_reflect_packet']) assert.ok(text.includes(word), word);
 });
 
 test('tool schemas require the fields', () => {

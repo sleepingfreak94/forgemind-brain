@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { BrainStore, containsSecret } from './brain.js';
 import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
+import { markReflected } from './reflect-chat.js';
 import { planFor } from './reflect-runners.js';
 import type { ModelRunner, Spawn } from './reflect-runners.js';
 
@@ -224,6 +225,7 @@ export function reflect(brainDir: string, options: ReflectOptions): Record<strin
             try { base.proposed.push({ id: store.propose({ ...proposal, reason: `reflect: ${proposal.reason}` }), proposal }); } catch { /* refused proposals are dropped */ }
           }
           results.push({ ...base, parsed }); succeeded = true;
+          try { markReflected(brainDir, source, now.getTime()); } catch { /* only affects the reminder */ }
         } catch (error) { failure ??= error as Error; results.push({ ...base, skipped: `failed: ${(error as Error).message.slice(0, 200)}` }); }
       }
     } finally { store.close(); }

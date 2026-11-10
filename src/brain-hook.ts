@@ -5,9 +5,11 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrainStore, clientSources, containsSecret, defaultBrainDirectory, redactSecrets } from './brain.js';
 import { contextText, resolveWorkspace } from './brain-mcp.js';
+import { reflectReminder } from './reflect-chat.js';
+import type { ScheduleDeps } from './schedule.js';
 import { readTranscript } from './transcript.js';
 
-export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }
+export interface BrainHookOptions { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[]; schedule?: ScheduleDeps }
 
 const MAX_INPUT = 1048576;
 const MAX_PROMPT = 4000, MAX_PROMPTS = 50, MAX_PROMPT_TOTAL = 20000;
@@ -63,7 +65,8 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   if (event === 'session-start') {
     const store = new BrainStore(brainDirectory);
     try {
-      const text = contextText(store, workspace) + '\n' + RECORD_LINE;
+      const due = reflectReminder(brainDirectory, source, (options.now ?? Date.now)(), options.schedule);
+      const text = contextText(store, workspace) + (due ? '\n' + due : '') + '\n' + RECORD_LINE;
       return source === 'claude-code'
         ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } })
         : JSON.stringify({ additional_context: text });
@@ -119,7 +122,7 @@ export async function runBrainHookDetailed(argv: string[], input: string, option
   }
 }
 
-export async function runBrainHook(argv: string[], input: string, options?: { brainDirectory?: string; now?: () => number; changedFiles?: (workspace: string) => string[] }): Promise<string> {
+export async function runBrainHook(argv: string[], input: string, options?: BrainHookOptions): Promise<string> {
   return (await runBrainHookDetailed(argv, input, options)).stdout;
 }
 

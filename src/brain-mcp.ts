@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
 import { BrainStore, clientSources, defaultBrainDirectory } from './brain.js';
+import { chatPacket } from './reflect-chat.js';
 import { DOC_TOOLS, adrSection, documentCandidates, runDocTool } from './documents-mcp.js';
 import type { BrainEntry, BrainHistory, BrainKind, BrainSource } from './brain.js';
 
@@ -22,7 +23,8 @@ const INSTRUCTIONS = 'Call brain_context first. If the project has no accepted o
   + 'Outlook, Confluence), call brain_record with a short summary of the decisions, outcomes and IDs/links; never paste raw message '
   + 'content. Before finishing a task, call brain_record with what worked and what failed, and brain_recipe with the plan, the exact '
   + 'prompts the user gave, the dead ends, how it was verified and the outcome. Attach screenshots from bug bashes or UI checks with '
-  + 'brain_record attachments (absolute file paths). Propose durable lessons with brain_propose.';
+  + 'brain_record attachments (absolute file paths). Propose durable lessons with brain_propose. '
+  + "When the user says 'reflect', call brain_reflect_packet and follow its instructions.";
 const KINDS = ['convention', 'lesson', 'decision', 'pattern'];
 
 const TOOLS = [
@@ -39,6 +41,8 @@ const TOOLS = [
       files: { type: 'array', items: { type: 'string' } }, outcome: { type: 'string' },
       attachments: { type: 'array', items: { type: 'string' }, maxItems: 10 } },
       required: ['title', 'summary', 'outcome'], additionalProperties: false } },
+  { name: 'brain_reflect_packet', description: "Recent sessions and recipes of this tool only, plus instructions for reflecting on them. Call when the user says 'reflect'.",
+    inputSchema: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 30 } }, additionalProperties: false } },
   ...DOC_TOOLS,
 ];
 
@@ -148,6 +152,11 @@ function runTool(name: string, args: Record<string, unknown>, store: BrainStore,
     const limit = args.limit === undefined ? 5 : args.limit;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 5) throw new Error('invalid limit');
     return rank(store, project, query, limit);
+  }
+  if (name === 'brain_reflect_packet') {
+    const days = args.days === undefined ? 2 : args.days;
+    if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 30) throw new Error('invalid days');
+    return chatPacket(context.brainDirectory, context.source, days, (context.now ?? (() => new Date()))().getTime());
   }
   if (name === 'brain_propose') {
     const id = store.propose({ kind: str(args, 'kind') as BrainKind, project, text: str(args, 'text'), reason: str(args, 'reason'),

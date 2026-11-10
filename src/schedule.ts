@@ -31,6 +31,15 @@ export function plistContent(brainDir: string, seconds: number, extra: string[] 
 `;
 }
 
+/** The ProgramArguments of the installed reflect plist, or undefined when none is installed or it is unreadable. No launchctl call, so it is fast. */
+export function scheduledCommand(deps: ScheduleDeps = {}): string[] | undefined {
+  try {
+    const text = readFileSync(join(deps.plistDir ?? join(homedir(), 'Library', 'LaunchAgents'), `${LABEL}.plist`), 'utf8');
+    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? '';
+    return [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(m => m[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'));
+  } catch { return undefined; }
+}
+
 /** Install (`every` like "48h"), remove (`off`) or report on the reflect LaunchAgent. */
 export function schedule(brainDir: string, opts: { every?: string | undefined; off?: boolean; status?: boolean; sources?: string | undefined; projects?: string | undefined; runners?: string[] | undefined }, deps: ScheduleDeps = {}): Record<string, unknown> {
   if ((deps.platform ?? process.platform) !== 'darwin') throw new Error('schedule needs macOS (launchd)');

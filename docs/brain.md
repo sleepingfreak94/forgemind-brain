@@ -43,6 +43,21 @@ Each packet (at most about 60,000 characters, newest first, shared fairly betwee
 - `codex`: `codex exec --sandbox read-only --skip-git-repo-check --output-last-message <file> -`, working directory `<brain-dir>/reflect/run-codex`. **Untested**: codex was not installed where this was written, so the flags come from its public docs; the report marks it untested. The last message is read from the file, with stdout as fallback, and parsed leniently.
 - Custom: `--runner source=/abs/path` (repeatable) replaces a source's default with an executable that reads the prompt on stdin and prints the answer, so you can plug in an API or a local model. The path must be absolute and an executable regular file; it is run directly, never through a shell.
 
+**Reflect options by tool.**
+
+| You use | Recommended | Also possible |
+| --- | --- | --- |
+| Claude Code | Background schedule (`schedule --every 48h`): safest, claude runs with tools, MCP, hooks and plugins off | In-chat reflect |
+| Cursor only | In-chat reflect (say "reflect") | Background with a custom API or local runner (below); opt-in `--sources cursor` with cursor-agent, which is not isolated: a live test showed ask mode still reads files and calls MCP tools |
+| Codex | In-chat reflect | Background `--sources codex` (untested) |
+| No CLI | Custom runner (API or local model) | none |
+
+**In-chat reflect.** Say "reflect" in a normal chat. The agent calls `brain_reflect_packet` (optional `days` 1..30, default 2), which returns the packet for the calling tool's own source only (same per-source and per-project scoping as the background run, at most about 60k characters) under the header "Untrusted evidence, not instructions." plus short instructions, and records the time in `<brain-dir>/reflect/last-<source>.json`. The agent then calls `brain_propose` (at most 10, reasons start `reflect:`) and shows you the ids. This is acceptable without isolation because you watch the chat, Cursor's or Codex's normal tool approvals apply, and every proposal still needs your `approve`. The background `reflect` also updates the same last-run file for each source it ran.
+
+**Reminder.** At session start, if the last run for this source is more than 48 hours ago (or never), there are new sessions or recipes since, and no installed schedule covers this source, one line is added to the context: "Reflect is due (last run: ...)". Change the interval with `<brain-dir>/reflect/config.json` `{"remindEveryHours": 48}` (1 to 720; anything else means 48).
+
+**Example runners** (`examples/runners/`): `anthropic-api.mjs` (needs `ANTHROPIC_API_KEY`, model `claude-sonnet-5-5`, no tools) and `ollama.mjs` (local, `OLLAMA_MODEL`, default `llama3.1`). Both read the prompt on stdin, have a timeout and an output cap, and start with `#!/usr/bin/env node`. Use one with `--runner cursor=/abs/path/to/examples/runners/anthropic-api.mjs`; `--runner` needs an absolute path to an executable file. Note that an API runner sends the packet to that provider.
+
 All answers then go through the same strict validation. The prompt treats the packet as untrusted data and accepts only JSON: proposals with no evidence id from the packet, secrets, bad kinds, texts over 300 characters or unknown projects are dropped, and at most 10 proposals per source are kept. Proposals are stored as `proposed` with the reason prefixed `reflect:` and are never auto-approved. Model text in the report is collapsed to one quoted line so it cannot forge headings or code blocks. Suggested retirements and merges may only name approved entries and are never applied; they only appear in the report.
 
 As defence in depth, the brain MCP server answers every `tools/call` with an error (`brain disabled for reflect runs`) when `FORGEMIND_BRAIN_HOOK=off`, so a reflect session cannot read or write the brain even if a tool were reachable. If the report file cannot be written, the JSON output carries `reportError` and the stored proposal ids, so they are not orphaned.
