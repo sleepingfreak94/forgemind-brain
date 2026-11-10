@@ -54,3 +54,18 @@ test('puts the old install back when the second rename fails', () => {
     assert.deepEqual(readdirSync(root), ['bin']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('keeps the old install and reports its path when the restore also fails', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'brain-install-')));
+  try {
+    const target = join(root, 'bin');
+    installLocal(built, pkg, target);
+    writeFileSync(join(target, 'marker.js'), 'old');
+    let calls = 0;
+    const broken: typeof renameSync = (from, to) => { if (++calls >= 2) throw new Error('disk says no'); renameSync(from, to); };
+    assert.throws(() => installLocal(built, pkg, target, broken), /previous install is kept at/);
+    const old = readdirSync(root).filter(n => n.startsWith('.bin-old-'));
+    assert.equal(old.length, 1);
+    assert.equal(readFileSync(join(root, old[0]!, 'marker.js'), 'utf8'), 'old');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

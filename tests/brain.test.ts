@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -229,4 +229,16 @@ test('version 1 and 2 databases migrate to 3 (history keeps rows, accepts codex)
   assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 3);
   check.exec('PRAGMA user_version = 4'); check.close();
   assert.throws(() => new BrainStore(dir), /unsupported/);
+}));
+
+test('migrate removes a stale migrating file; a stray hard link names itself in the open error', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  const legacy = legacyBrain(dir);
+  const stale = join(dir, '.brain.migrating-2147483646-abc');
+  copyFileSync(legacy, stale); chmodSync(stale, 0o600);
+  assert.deepEqual(migrateLegacy(dir), { entries: 1, history: 0 });
+  assert.deepEqual(readdirSync(dir).sort(), ['brain', 'brain.sqlite']);
+  linkSync(join(dir, 'brain.sqlite'), stale);
+  assert.throws(() => new BrainStore(dir), /unsafe memory storage: .*\.brain\.migrating-2147483646-abc.* safe to delete/);
+  unlinkSync(stale);
+  new BrainStore(dir).close();
 }));
