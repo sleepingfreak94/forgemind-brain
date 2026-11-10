@@ -26,6 +26,18 @@ New entries are `proposed`. You `approve` or `reject` them; an approved entry ca
 
 `learn` reads the git log and remote branch names, and merged pull requests through `gh`. It creates only `proposed` entries scoped to the project; you still approve or reject each one. Proposal text is generated from statistics (for example "4 of 5 commits"), never copied from commit, PR or review text. The command prints `{"proposed": [ids], "skipped": [sources]}`; a source that fails (for example `gh` not signed in) is listed in `skipped` and does not stop the others.
 
+## Reflect
+
+`approve`, `reject` and `retire` take `--ids a,b,c` (16-hex ids) instead of `--id`: every id is checked first and all change in one transaction, or none do.
+
+`npm run brain -- reflect [--days 2] [--dry-run] [--last]` looks at the last N days across all projects and asks a model which prompts, plans and workflows worked. The packet (at most about 60,000 characters, newest first, shared fairly between projects) holds history rows with their signals, the prompts that were followed by a correction (a correction at index i corrects prompt i-1) and the prompts of sessions with 0 corrections, recipes, and the existing approved and proposed entries. Rows from before schema v5 have no prompts or signals and are still included.
+
+The model runs as `claude -p --output-format json --model sonnet --tools "" --strict-mcp-config --no-session-persistence` with the prompt on stdin (10 minute timeout, 4 MB output cap). `--tools ""` disables every built-in tool and `--strict-mcp-config` without `--mcp-config` loads no MCP servers, so transcript text cannot trigger an action. The prompt treats the packet as untrusted data and accepts only JSON. Answers are validated strictly: proposals with no evidence id from the packet, secrets, bad kinds, texts over 300 characters or unknown projects are dropped, and at most 10 proposals are kept. Proposals are stored as `proposed` with the reason prefixed `reflect:` and are never auto-approved. Suggested retirements and merges are never applied; they only appear in the report.
+
+The report goes to `~/.forgemind/reflect/YYYY-MM-DD-HHMM.md` (directory `0700`, file `0600`) with ready-to-run batch commands. `--dry-run` prints the packet size and prompt without running the model; `--last` prints the latest report. A lock file stops two runs overlapping (a lock older than 30 minutes is treated as stale). A reflect run writes no history row: history sources are fixed and none fits, and the report is the record.
+
+`npm run brain -- schedule --every 48h | --off | --status` (macOS only) writes or removes `~/Library/LaunchAgents/com.forgemind.brain.reflect.plist` (StartInterval in seconds, RunAtLoad false) and runs `launchctl bootstrap|bootout gui/<uid>`. The job runs `node <brain-dir>/bin/cli.js reflect` (so run `install-local` first) and logs to `<brain-dir>/reflect/launchd.log`. It uses your Claude subscription or API through the `claude` CLI. The packet contains your exact prompts, but it is sent only to the model you already use.
+
 ## Install
 
 ```
