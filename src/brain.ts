@@ -19,17 +19,33 @@ export const clientSources = ['claude-code', 'cursor', 'codex'] as const;
 export interface BrainHistory {
   id: string; project: string; source: BrainSource; title: string; summary: string; files: string[];
   outcome: string; evidence: string[]; attachments: string[]; at: number;
+  /** Exact session prompts and measured signals (schema v5 contract); null on rows recorded before capture existed. */
+  prompts: string[] | null; signals: HistorySignals | null;
+}
+export interface HistorySignals {
+  prompts: number; corrections: number; correctionIndexes: number[]; model: string | null;
+  assistantTurns: number; toolErrors: number; durationMs: number | null;
 }
 const sources: readonly string[] = ['harness', ...clientSources];
 const kinds: readonly string[] = ['convention', 'lesson', 'decision', 'pattern'];
 const statuses: readonly string[] = ['proposed', 'approved', 'rejected', 'retired'];
 /** The generic key/token/secret/password pattern also refuses harmless text such as "token: use refresh flow"; that is intended. */
 const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bsk-[A-Za-z0-9_-]{16,}/, /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)\s*[:=]/i];
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)["']?\s*[:=]/i];
 
 /** Local owner state; never a directory under the repository. */
 export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
+const secretSpans = secrets.map(pattern => new RegExp(pattern.source, pattern.flags + 'g'));
+/** Replace only the secret spans with [redacted]; the generic keyword pattern also takes the rest of the line (multi-word values). */
+export function redactSecrets(text: string): string {
+  let out = String(text);
+  for (const pattern of secretSpans) {
+    const source = pattern.source.startsWith('(key|token') ? pattern.source + '[^\\r\\n]*' : pattern.source;
+    out = out.replace(new RegExp(source, pattern.flags), '[redacted]');
+  }
+  return out;
+}
 export function containsSecret(value: string): boolean { return secrets.some(pattern => pattern.test(value)); }
 function noSecret(value: string): void {
   if (containsSecret(value)) throw new Error('refusing to store a secret');
@@ -42,6 +58,22 @@ function limited(value: unknown, min: number, max: number, name: string): string
 function absolute(value: unknown): string {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('project must be an absolute path');
   return value;
+}
+function promptList(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 50) throw new Error('invalid prompts');
+  const list = (value as unknown[]).map(item => limited(item, 1, 4000, 'prompts'));
+  if (list.reduce((n, item) => n + item.length, 0) > 20000) throw new Error('invalid prompts');
+  return list;
+}
+function signalRecord(value: unknown): HistorySignals | null {
+  if (value === undefined || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const count = (x: unknown): number => { if (!Number.isInteger(x) || (x as number) < 0 || (x as number) > 1e9) throw new Error('invalid signals'); return x as number; };
+  if (typeof value !== 'object' || Array.isArray(value) || !Array.isArray(v.correctionIndexes) || v.correctionIndexes.length > 50) throw new Error('invalid signals');
+  const model = v.model === null ? null : limited(v.model, 1, 100, 'signals');
+  return { prompts: count(v.prompts), corrections: count(v.corrections), correctionIndexes: v.correctionIndexes.map(count), model,
+    assistantTurns: count(v.assistantTurns), toolErrors: count(v.toolErrors), durationMs: v.durationMs === null ? null : count(v.durationMs) };
 }
 const order = 'ORDER BY created_at, id';
 /**
@@ -147,7 +179,7 @@ export class BrainStore {
     });
   }
   record(input: { project: string; source: BrainSource; key: string; title: string; summary: string; files: string[];
-    outcome: string; evidence: string[]; attachments?: unknown }): string {
+    outcome: string; evidence: string[]; attachments?: unknown; prompts?: unknown; signals?: unknown }): string {
     const rawSource: unknown = input.source, rawFiles: unknown = input.files, rawEvidence: unknown = input.evidence;
     if (typeof rawSource !== 'string' || !sources.includes(rawSource)) throw new Error('invalid source');
     const project = limited(absolute(input.project), 1, 4096, 'project');
@@ -159,9 +191,19 @@ export class BrainStore {
     const files = (rawFiles as unknown[]).map(item => limited(item, 0, 1024, 'files'));
     if (!Array.isArray(rawEvidence) || rawEvidence.length > 20) throw new Error('invalid evidence');
     const evidence = (rawEvidence as unknown[]).map(item => limited(item, 0, 300, 'evidence'));
+    const prompts = promptList(input.prompts), signals = signalRecord(input.signals);
     const id = createHash('sha256').update(JSON.stringify([rawSource, project, key])).digest('hex').slice(0, 16);
     return this.transaction(() => {
-      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) {
+      const existing = this.db.prepare('SELECT evidence FROM history WHERE id = ?').get(id);
+      if (existing && evidence[0]?.startsWith('hook:') && (existing.evidence as string).startsWith('["hook:')) {
+        // A resumed session reports again under the same key; the later capture is the fuller one.
+        // A resumed capture without prompts (e.g. only the transcript tail was read) keeps the earlier prompts, signals and title.
+        const p = prompts ? JSON.stringify(prompts) : null, sg = signals ? JSON.stringify(signals) : null;
+        this.db.prepare('UPDATE history SET title = CASE WHEN ? IS NULL THEN title ELSE ? END, summary = ?, files = ?, prompts = COALESCE(?, prompts), signals = COALESCE(?, signals) WHERE id = ?')
+          .run(p, title, summary, JSON.stringify(files), p, sg, id);
+        return id;
+      }
+      if (existing) {
         if (Array.isArray(input.attachments) && input.attachments.length > 0) throw new Error('already recorded today; attachments not added');
         return id; // a repeat never copies files again
       }
@@ -170,21 +212,26 @@ export class BrainStore {
       try { stored = copyAttachments(this.directory, project, id, sources); } finally { closeAttachments(sources); }
       try {
         const now = Date.now();
-        this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now, stored.length ? JSON.stringify(stored) : null);
+        this.db.prepare('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at, attachments, prompts, signals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, project, rawSource, title, summary, JSON.stringify(files), outcome, JSON.stringify(evidence), now, stored.length ? JSON.stringify(stored) : null,
+            prompts ? JSON.stringify(prompts) : null, signals ? JSON.stringify(signals) : null);
         this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run('record', id, now);
       } catch (error) { if (stored[0]) removeAttachments(dirname(stored[0])); throw error; }
       return id;
     });
   }
-  history(project: string, limit = 20): BrainHistory[] {
+  /** kind 'agent' lists only agent-written rows, 'auto' only hook captures that hold real prompts. */
+  history(project: string, limit = 20, kind?: 'agent' | 'auto'): BrainHistory[] {
     const where = absolute(project);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('invalid limit');
-    return this.db.prepare('SELECT * FROM history WHERE project = ? ORDER BY at DESC, rowid DESC LIMIT ?').all(where, limit).map(row => ({
+    const filter = kind === 'agent' ? `AND evidence NOT LIKE '["hook:%'` : kind === 'auto' ? `AND evidence LIKE '["hook:%' AND prompts IS NOT NULL AND prompts != '[]'` : '';
+    return this.db.prepare(`SELECT * FROM history WHERE project = ? ${filter} ORDER BY at DESC, rowid DESC LIMIT ?`).all(where, limit).map(row => ({
       id: row.id as string, project: row.project as string, source: row.source as BrainSource, title: row.title as string,
       summary: row.summary as string, files: JSON.parse(row.files as string) as string[], outcome: row.outcome as string,
       evidence: JSON.parse(row.evidence as string) as string[], at: row.at as number,
-      attachments: row.attachments === null ? [] : JSON.parse(row.attachments as string) as string[]
+      attachments: row.attachments === null ? [] : JSON.parse(row.attachments as string) as string[],
+      prompts: row.prompts === null || row.prompts === undefined ? null : JSON.parse(row.prompts as string) as string[],
+      signals: row.signals === null || row.signals === undefined ? null : JSON.parse(row.signals as string) as HistorySignals
     }));
   }
   private rows(sql: string, params: string[]): BrainEntry[] {
@@ -244,4 +291,10 @@ export class BrainStore {
         this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run(action, id, now);
       }
     });
-  }}
+  }
+
+  /** The open connection and its write transaction, for documents.ts. */
+  get connection(): { db: DatabaseSync; transaction: <T>(work: () => T) => T } {
+    return { db: this.db, transaction: work => this.transaction(work) };
+  }
+}

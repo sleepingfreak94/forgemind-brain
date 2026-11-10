@@ -12,6 +12,7 @@ import type { ModelRunner, Spawn } from './reflect-runners.js';
 import { parseCustom } from './reflect-runners.js';
 import { schedule } from './schedule.js';
 import type { ScheduleDeps } from './schedule.js';
+import { DOC_COMMANDS, DOC_STATUSES, docsCommand } from './documents-cli.js';
 
 class UsageError extends Error {}
 
@@ -34,12 +35,15 @@ const commands: Record<string, { required: string[]; optional: string[]; bool?: 
   reflect: { required: [], optional: ['days', 'sources', 'projects', 'runner'], bool: ['dry-run', 'last'] },
   schedule: { required: [], optional: ['every', 'sources', 'projects', 'runner'], bool: ['off', 'status'] },
   learn: { required: ['workspace'], optional: ['source', 'limit'] },
-  history: { required: ['workspace'], optional: ['limit'] }
+  history: { required: ['workspace'], optional: ['limit'] },
+  ...DOC_COMMANDS
 };
 // Usage: history --workspace PATH [--limit 1-200]
 
 function parse(argv: string[]): { command: string; args: Record<string, string> } {
   if (!Array.isArray(argv) || argv.length === 0) throw new UsageError('missing command');
+  // `docs <sub>` is the command `docs-<sub>`.
+  if (argv[0] === 'docs') argv = [`docs-${String(argv[1])}`, ...argv.slice(2)];
   const command = String(argv[0]);
   const spec = Object.hasOwn(commands, command) ? commands[command] : undefined;
   if (!spec) throw new UsageError('unknown command');
@@ -59,8 +63,9 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   }
   for (const key of spec.required) if (!(key in args)) throw new UsageError(`missing --${key}`);
   if ('scope' in args && args.scope !== 'project' && args.scope !== 'global') throw new UsageError('invalid --scope');
-  if (command === 'list' && 'status' in args && !['proposed', 'approved', 'rejected', 'retired'].includes(args.status!)) throw new UsageError('invalid --status');
-  if ('kind' in args && !['convention', 'lesson', 'decision', 'pattern'].includes(args.kind!)) throw new UsageError('invalid --kind');
+  const docs = command.startsWith('docs-');
+  if ('status' in args && command !== 'schedule' && !(docs ? DOC_STATUSES : ['proposed', 'approved', 'rejected', 'retired']).includes(args.status!)) throw new UsageError('invalid --status');
+  if ('kind' in args && !(docs ? ['adr', 'recipe'] : ['convention', 'lesson', 'decision', 'pattern']).includes(args.kind!)) throw new UsageError('invalid --kind');
   if ('source' in args && !['git', 'github', 'all'].includes(args.source!)) throw new UsageError('invalid --source');
   if ('limit' in args && (!/^\d+$/.test(args.limit!) || Number(args.limit) < 1 || Number(args.limit) > 1000)) throw new UsageError('invalid --limit');
   if (['approve', 'retire', 'reject'].includes(command) && ('id' in args) === ('ids' in args)) throw new UsageError('give exactly one of --id or --ids');
@@ -100,6 +105,7 @@ function execute(command: string, args: Record<string, string>, run: CliRunner, 
       if (!entry) throw new Error('unknown brain entry');
       return entry;
     };
+    if (command.startsWith('docs-')) return docsCommand(command, args, store, workspace);
     switch (command) {
       case 'list': {
         const entries = store.list(args.status ? { status: args.status as BrainStatus } : {})
