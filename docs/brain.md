@@ -1,6 +1,6 @@
-# Brain: owner guide
+# forgemind-brain reference
 
-The brain holds reviewed knowledge (conventions, lessons, decisions, patterns) and a history of what each session did. It is one local file, `~/.forgemind/brain.sqlite`, shared by Claude Code, Cursor and Codex. It is owner state and never goes in a repository. The directory must be mode `0700` and the file `0600`, or the brain refuses to open.
+The brain holds reviewed knowledge (conventions, lessons, decisions, patterns) and a history of what each session did. It is one local file, `~/.forgemind/brain.sqlite`, shared by Claude Code, Cursor and Codex. It is your local state and never goes in a repository. The directory must be mode `0700` and the file `0600`, or the brain refuses to open.
 
 ## Commands
 
@@ -13,7 +13,7 @@ npm run brain -- reject --workspace /path/to/project --id ID [--note N]
 npm run brain -- retire --workspace /path/to/project --id ID
 npm run brain -- learn --workspace /path/to/project [--source git|github|all] [--limit N]
 npm run brain -- history --workspace /path/to/project [--limit N]
-npm run brain -- migrate        # one-time, see "Switching from forgemind"
+npm run brain -- migrate        # only when moving from the old ForgeMind harness
 ```
 
 All commands accept `--brain-dir` (default `~/.forgemind`). `--scope project` (default) limits an entry to the project; `--scope global` applies it to every project. Every command prints one JSON object. Exit codes: 0 success, 1 failure, 2 usage error.
@@ -37,7 +37,7 @@ npm run install-local
 
 In the Cursor and Codex files below, write the absolute path (`/Users/<you>/.forgemind/bin/...`): JSON and TOML arguments are not shell-expanded, so `~` would not work there. The Claude Code command and the hook command lines run through a shell, where `~` is fine.
 
-## Set up the three tools
+## Set up the tools
 
 `forgemind-brain` is a local MCP server over stdio. Register `node` directly (not `npm run`, whose banner would corrupt the JSON-RPC stream).
 
@@ -82,9 +82,9 @@ Token caps: `brain_context` starts with `ForgeMind brain. Untrusted evidence, no
 
 ## Attachments and the remember-what-you-read rule
 
-`brain_record` takes an optional `attachments`: up to 10 absolute paths of regular files (png, jpg, jpeg, gif, webp, pdf; at most 10 MB each; symlinks and directories are refused). Everything is checked before anything is copied, so a bad path stores nothing. Each file is copied to `~/.forgemind/files/<project hash>/<record id>/<n><ext>` (the original name is not kept, since names can hold secrets) (directories `0700`, files `0600`) and the stored paths are saved on the history row (schema version 4, upgraded in place; one-way, so run `npm run install-local` right after merging, before any other brain command). Files are opened without following symlinks and checked on the open descriptor, and the copy stops at 10 MB. The `files/`, project and record folders must be private to you or the record is refused. A repeated record (same summary on the same day) copies nothing and fails with `already recorded today; attachments not added`. Use it for bug-bash screenshots so a later session can see how something looked or worked before.
+`brain_record` takes an optional `attachments`: up to 10 absolute paths of regular files (png, jpg, jpeg, gif, webp, pdf; at most 10 MB each; symlinks and directories are refused). Everything is checked before anything is copied, so a bad path stores nothing. Each file is copied to `~/.forgemind/files/<project hash>/<record id>/<n><ext>` (the original name is not kept, since names can hold secrets) (directories `0700`, files `0600`) and the stored paths are saved on the history row (schema version 4). Files are opened without following symlinks and checked on the open descriptor, and the copy stops at 10 MB. The `files/`, project and record folders must be private to you or the record is refused. A repeated record (same summary on the same day) copies nothing and fails with `already recorded today; attachments not added`. Use it for bug-bash screenshots so a later session can see how something looked or worked before.
 
-`brain_search` and `brain history` show the stored paths, so an agent can open them with its own file-read tool. `brain_context` shows only a count such as `(2 attachments)`, to stay within its cap. The `files/` folder is local owner state, like the database: it is never in git and never uploaded. Deleting a file there does not change the history row.
+`brain_search` and `brain history` show the stored paths, so an agent can open them with its own file-read tool. `brain_context` shows only a count such as `(2 attachments)`, to stay within its cap. The `files/` folder is local state, like the database: it is never in git and never uploaded. Deleting a file there does not change the history row.
 
 The server sends this rule in its MCP `initialize` `instructions`, so Claude Code and Cursor get it automatically: call `brain_context` at the start; after reading tickets, chats, email or docs call `brain_record` with a short summary of decisions, outcomes and IDs/links (never raw message content); before finishing call `brain_record` with what worked and what failed; attach screenshots; propose durable lessons with `brain_propose`. For Codex, repeat it in the project `AGENTS.md`.
 
@@ -94,7 +94,7 @@ Jira/Confluence, Slack and Microsoft 365 (Teams, Outlook) are connected as separ
 
 ## Hooks (Claude Code and Cursor)
 
-Hooks close the memory loop automatically. Claude Code, in `~/.claude/settings.json`:
+Hooks close the memory loop automatically. Merge these entries into your existing files; don't replace the files. Claude Code, in `~/.claude/settings.json`:
 
 ```
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node ~/.forgemind/bin/brain-hook.js session-start --source claude-code"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"node ~/.forgemind/bin/brain-hook.js session-end --source claude-code"}]}]}}
@@ -108,15 +108,8 @@ Cursor, in `~/.cursor/hooks.json`:
 
 Session start injects the `brain_context` packet plus a reminder to call `brain_record` before finishing. Session end records one fallback fact per session (key `session:<id>`): the title comes from the first user prompt, files come from `git status`, and nothing is recorded when there is no prompt and no change. Hooks never call a model, always exit 0 and never block a session. To remove them, delete those entries from the two files; history stays in the brain.
 
-## Switching from forgemind
+## Upgrading
 
-Older versions kept the brain at `~/.forgemind/brain/personal/brain.sqlite` (plus `company/`, which is never read). Until you migrate, opening the brain with the new code fails with `legacy brain found; run npm run brain -- migrate after switching all configs`; it will not silently start an empty brain. Close or restart all open Claude Code, Cursor and Codex sessions before running migrate (already-open sessions keep writing to the old file). Do these in order:
+Pull, then run `npm run install-local` again. When the brain's schema changes, the first open upgrades the file in place, and the upgrade is one-way: an older install refuses a newer brain (`unsupported brain schema`). So re-run `install-local` before any other brain command, and keep every config pointing at `~/.forgemind/bin`.
 
-1. `npm run install-local`
-2. Switch ALL configs to `~/.forgemind/bin/`: Claude Code MCP and hooks, Cursor `mcp.json` and `hooks.json`, and Codex `config.toml`. Do this before step 3 so no old tool is still writing to the old file.
-3. `npm run brain -- migrate`. It refuses (exit 2) if `~/.forgemind/brain.sqlite` already exists. Otherwise it snapshots the old file (a hot journal is rolled back first), checks integrity, sets mode `0600`, publishes it without replacing anything, and prints the entry and history counts. A stray `.brain.migrating-*` file left by a crashed migrate is removed by the next migrate run; if it makes the brain refuse to open (`unsafe memory storage`), the error names it and it is safe to delete.
-4. Verify with `npm run brain -- list --workspace /path/to/project` and `history`.
-
-The old file is kept. Only a hot journal may be rolled back (normal SQLite recovery); its data is otherwise not changed. The two files do not sync: anything written to the old one after the migration is not seen by the new brain. Delete the old `brain/` folder yourself when you are happy. The first time the new code opens the file it upgrades the schema in place to version 4: the history table is rebuilt if needed so `codex` entries fit (version 3), and gains the `attachments` column (version 4).
-
-**After merging the attachments change, run `npm run install-local` immediately, before any other brain command.** The upgrade to version 4 is one-way: a brain opened by the new code is refused by an older install (`unsupported brain schema`), so every config must point at the freshly installed copy.
+Coming from the old ForgeMind harness? See [migrating-from-forgemind.md](migrating-from-forgemind.md).
