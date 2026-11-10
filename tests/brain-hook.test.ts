@@ -252,3 +252,22 @@ test('a FIFO transcript path cannot hang the hook', async () => {
   execFileSync('/usr/bin/mkfifo', [fifo]);
   assert.equal(await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: fifo }), opts()), '');
 });
+
+test('a cut that creates a secret match is re-redacted; the session is still recorded', async () => {
+  const t = transcript([{ type: 'user', message: { role: 'user', content: 'y'.repeat(139) + ' AKIA' + 'B'.repeat(20) } }]);
+  const before = history().length;
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts());
+  assert.equal(history().length, before + 1);
+  assert.ok(!history()[0]!.title.includes('AKIABBBB'));
+});
+
+test('a resumed capture without prompts keeps the earlier prompts, signals and title', async () => {
+  const id = sid();
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: id, cwd: ws,
+    transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'keep me' } }]) }), opts());
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: id, cwd: ws,
+    transcript_path: transcript([{ type: 'assistant', message: { id: 'm', role: 'assistant', content: [] } }]) }), opts(['z.ts']));
+  const h = history().find(x => x.title === 'keep me')!;
+  assert.deepEqual(h.prompts, ['keep me']);
+  assert.deepEqual(h.files, ['z.ts']);
+});

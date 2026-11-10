@@ -197,8 +197,10 @@ export class BrainStore {
       const existing = this.db.prepare('SELECT evidence FROM history WHERE id = ?').get(id);
       if (existing && evidence[0]?.startsWith('hook:') && (existing.evidence as string).startsWith('["hook:')) {
         // A resumed session reports again under the same key; the later capture is the fuller one.
-        this.db.prepare('UPDATE history SET title = ?, summary = ?, files = ?, prompts = ?, signals = ? WHERE id = ?')
-          .run(title, summary, JSON.stringify(files), prompts ? JSON.stringify(prompts) : null, signals ? JSON.stringify(signals) : null, id);
+        // A resumed capture without prompts (e.g. only the transcript tail was read) keeps the earlier prompts, signals and title.
+        const p = prompts ? JSON.stringify(prompts) : null, sg = signals ? JSON.stringify(signals) : null;
+        this.db.prepare('UPDATE history SET title = CASE WHEN ? IS NULL THEN title ELSE ? END, summary = ?, files = ?, prompts = COALESCE(?, prompts), signals = COALESCE(?, signals) WHERE id = ?')
+          .run(p, title, summary, JSON.stringify(files), p, sg, id);
         return id;
       }
       if (existing) {
