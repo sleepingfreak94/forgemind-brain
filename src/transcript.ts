@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
 /** Measured session signals; the shape is the schema v5 history.signals contract. */
@@ -8,17 +8,21 @@ export interface SessionSignals {
 }
 export interface ParsedTranscript { prompts: string[]; signals: SessionSignals }
 
+const MAX_INDEXED_PROMPTS = 50;
 export const MAX_TRANSCRIPT_BYTES = 20 * 1024 * 1024;
 
 /** A prompt that starts like one of these is a correction of the previous answer. Conservative: leading words only. */
 export const CORRECTION_STARTS: readonly RegExp[] = [
-  /^(no|nope|nah|wrong)\b/, /^that'?s (not|wrong|incorrect)\b/, /^that is (not|wrong|incorrect)\b/, /^not (what|quite|right|that)\b/,
-  /^instead\b/, /^undo\b/, /^revert\b/, /^stop\b/, /^(please )?(don'?t|do not)\b/, /^you (didn'?t|did not|forgot|missed|broke|misunderstood)\b/,
-  /^(that )?(doesn'?t|does not|didn'?t|did not) (work|help)\b/, /^(this|that) (is )?(still )?(broken|wrong)\b/, /^actually,? (no|don'?t|that)\b/
+  /^(no|nope|nah|wrong)\b/, /^that'?s (not|wrong|incorrect)\b/, /^that is (not|wrong|incorrect)\b/, /^not (what|quite|right|that|working)\b/,
+  /^undo\b/, /^you (didn'?t|did not|forgot|missed|broke|misunderstood)\b/, /^i (said|told you)\b/, /^why did you\b/,
+  /^(that )?(doesn'?t|does not|didn'?t|did not) (work|help)\b/, /^(this|that) (is )?(still )?(broken|wrong)\b/, /^actually,? (no|don'?t|that)\b/,
+  /^still (broken|fails|failing|not working)\b/, /^it still\b/, /^wait\b.{0,80}\bnot\b/
 ];
+/** Starts that look like corrections but are not ("no rush", "nope that works"). */
+export const CORRECTION_EXCLUDES: readonly RegExp[] = [/^(no|nope|nah)\b[\s,.!-]*(rush|problem|worries|need|thanks|thank)\b/, /^(no|nope|nah)\b[\s,.!-]*(that|it|this)\b.{0,15}\b(works|worked|is fine|looks good|is good)\b/];
 export const isCorrection = (prompt: string): boolean => {
   const text = prompt.trim().toLowerCase().replace(/^[\s"'`*_-]+/, '');
-  return CORRECTION_STARTS.some(pattern => pattern.test(text));
+  return !CORRECTION_EXCLUDES.some(pattern => pattern.test(text)) && CORRECTION_STARTS.some(pattern => pattern.test(text));
 };
 
 // Wrapper tags Claude Code and Cursor put in user-role messages that the human never typed.
@@ -57,7 +61,7 @@ export function parseTranscript(text: string): ParsedTranscript {
     if (Number.isFinite(ts)) { first = Math.min(first, ts); last = Math.max(last, ts); }
     const message = e.message && typeof e.message === 'object' ? e.message as Record<string, unknown> : undefined;
     const role = e.type === 'user' || e.type === 'assistant' ? e.type : e.role;
-    if (e.isSidechain === true) continue;
+    if (e.isSidechain === true || e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) continue;
     if (role === 'assistant') {
       const id = message?.id;
       if (typeof id === 'string') turns.add(id); else anonymousTurns++;
@@ -73,8 +77,9 @@ export function parseTranscript(text: string): ParsedTranscript {
       if (prompt !== undefined) prompts.push(prompt);
     }
   }
-  const correctionIndexes = prompts.flatMap((p, i) => i > 0 && isCorrection(p) ? [i] : []);
-  return { prompts, signals: { prompts: prompts.length, corrections: correctionIndexes.length, correctionIndexes, model,
+  const all = prompts.flatMap((p, i) => i > 0 && isCorrection(p) ? [i] : []);
+  const correctionIndexes = all.filter(i => i < MAX_INDEXED_PROMPTS); // the store keeps at most 50 indexes
+  return { prompts, signals: { prompts: prompts.length, corrections: all.length, correctionIndexes, model,
     assistantTurns: turns.size + anonymousTurns, toolErrors, durationMs: Number.isFinite(first) && last >= first ? last - first : null } };
 }
 
@@ -83,7 +88,7 @@ export function readTranscript(path: unknown): ParsedTranscript | undefined {
   if (typeof path !== 'string' || path === '' || !isAbsolute(path)) return undefined;
   let fd: number | undefined;
   try {
-    fd = openSync(path, 'r');
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
     if (!stat.isFile()) return undefined;
     const start = Math.max(0, stat.size - MAX_TRANSCRIPT_BYTES);

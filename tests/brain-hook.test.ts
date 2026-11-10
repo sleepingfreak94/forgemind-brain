@@ -1,11 +1,12 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrainStore } from '../src/brain.js';
 import { contextText } from '../src/brain-mcp.js';
-import { cleanPrompt, runBrainHook, runBrainHookDetailed } from '../src/brain-hook.js';
+import { runBrainHook, runBrainHookDetailed } from '../src/brain-hook.js';
 
 const LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
 const NOW = Date.parse('2026-10-24T10:00:00Z');
@@ -83,13 +84,6 @@ test('claude session-end records from transcript', async () => {
 });
 
 const WRAPPED = '<timestamp>Saturday, Oct 24, 2026, 11:11 PM (UTC+5:30)</timestamp>\n<user_query>\nAnswer in 4 short lines...\n</user_query>';
-
-test('cleanPrompt', () => {
-  assert.equal(cleanPrompt(WRAPPED), 'Answer in 4 short lines...');
-  assert.equal(cleanPrompt('  Fix   the\nbug '), 'Fix the bug');
-  assert.equal(cleanPrompt('<timestamp>x</timestamp>'), '');
-  assert.equal(cleanPrompt('<context>hi'), 'hi');
-});
 
 test('cursor session-end with null transcript records nothing; wrapped prompt dedups', async () => {
   const before = history().length;
@@ -198,4 +192,63 @@ test('context ranks agent records first and hides auto-captures without real pro
     assert.throws(() => store.record({ ...base, key: 'k', title: 't', evidence: [], signals: { prompts: -1 } }), /invalid signals/);
     assert.equal(store.history(project).find(h => h.title === 'Agent note')?.prompts, null);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('more than 50 corrections and a long model never lose the row; compact summaries are not prompts', async () => {
+  const lines: object[] = [{ type: 'user', message: { role: 'user', content: 'start' } },
+    { type: 'user', isCompactSummary: true, message: { role: 'user', content: 'This session is being continued ' + 'z'.repeat(15000) } },
+    { type: 'user', isVisibleInTranscriptOnly: true, message: { role: 'user', content: 'visible only' } },
+    { type: 'assistant', message: { id: 'm', role: 'assistant', model: 'm'.repeat(150), content: [] } }];
+  for (let i = 0; i < 55; i++) lines.push({ type: 'user', message: { role: 'user', content: 'no, again ' + i } });
+  const t = transcript(lines);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts());
+  const h = history()[0]!;
+  assert.equal(h.title, 'start');
+  assert.equal(h.signals!.corrections, 55);
+  assert.equal(h.signals!.correctionIndexes.length, 49);
+  assert.equal(h.signals!.model!.length, 100);
+  assert.ok(!h.prompts!.some(p => p.includes('continued') || p === 'visible only'));
+});
+
+test('secrets straddling a cap are redacted before cutting; harmless text survives', async () => {
+  const token = 'ghp_' + 'A'.repeat(30);
+  const t = transcript([{ type: 'user', message: { role: 'user', content: 'a'.repeat(3990) + ' ' + token } },
+    { type: 'user', message: { role: 'user', content: 'fix the auth token: refresh flow\nline two\npassword=hunter2 ok' } }]);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t }), opts());
+  const h = history()[0]!;
+  assert.ok(!JSON.stringify(h).includes('AAAAAA'));
+  assert.equal(h.prompts![0]!.length, 4000);
+  assert.equal(h.prompts![1], 'fix the auth [redacted] flow\nline two\n[redacted] ok');
+  const t2 = transcript([{ type: 'user', message: { role: 'user', content: 'x'.repeat(150) + ' ghp_' + 'B'.repeat(30) } }]);
+  await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: t2 }), opts());
+  assert.ok(!history()[0]!.title.includes('BBBB'));
+});
+
+test('a resumed session updates its hook row; agent rows stay idempotent; 60 auto rows do not hide an agent row', async () => {
+  const id = sid();
+  const input = JSON.stringify({ session_id: id, cwd: ws, transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'first' } }]) });
+  await runBrainHook(['session-end', '--source', 'claude-code'], input, opts());
+  const input2 = JSON.stringify({ session_id: id, cwd: ws, transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'first' } }, { type: 'user', message: { role: 'user', content: 'second' } }]) });
+  const before = history().length;
+  await runBrainHook(['session-end', '--source', 'claude-code'], input2, opts(['q.ts']));
+  assert.equal(history().length, before);
+  const h = history().find(x => x.prompts?.[1] === 'second')!;
+  assert.deepEqual(h.files, ['q.ts']);
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'brain-many-')));
+  const project = join(dir, 'p'); mkdirSync(project);
+  const store = new BrainStore(join(dir, 'b'));
+  try {
+    const base = { project, source: 'claude-code' as const, summary: 's', files: [], outcome: 'done' };
+    store.record({ ...base, key: 'g', title: 'Agent v1', evidence: [] });
+    store.record({ ...base, key: 'g', title: 'Agent v2', evidence: [] });
+    assert.equal(store.history(project)[0]!.title, 'Agent v1');
+    for (let i = 0; i < 60; i++) store.record({ ...base, key: 'a' + i, title: 'Auto ' + i, evidence: ['hook:claude-code'], prompts: ['p'] });
+    assert.ok(contextText(store, project).includes('Agent v1'));
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a FIFO transcript path cannot hang the hook', async () => {
+  const fifo = join(tdir, 'fifo' + seq.n++);
+  execFileSync('/usr/bin/mkfifo', [fifo]);
+  assert.equal(await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: fifo }), opts()), '');
 });

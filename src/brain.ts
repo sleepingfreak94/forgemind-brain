@@ -36,6 +36,16 @@ const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bs
 /** Local owner state; never a directory under the repository. */
 export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
+const secretSpans = secrets.map(pattern => new RegExp(pattern.source, pattern.flags + 'g'));
+/** Replace only the secret spans with [redacted]; the generic keyword pattern also takes the value up to whitespace. */
+export function redactSecrets(text: string): string {
+  let out = String(text);
+  for (const pattern of secretSpans) {
+    const source = pattern.source.startsWith('(key|token') ? pattern.source + '[ \\t]*[^\\s]*' : pattern.source;
+    out = out.replace(new RegExp(source, pattern.flags), '[redacted]');
+  }
+  return out;
+}
 export function containsSecret(value: string): boolean { return secrets.some(pattern => pattern.test(value)); }
 function noSecret(value: string): void {
   if (containsSecret(value)) throw new Error('refusing to store a secret');
@@ -184,7 +194,14 @@ export class BrainStore {
     const prompts = promptList(input.prompts), signals = signalRecord(input.signals);
     const id = createHash('sha256').update(JSON.stringify([rawSource, project, key])).digest('hex').slice(0, 16);
     return this.transaction(() => {
-      if (this.db.prepare('SELECT 1 FROM history WHERE id = ?').get(id)) {
+      const existing = this.db.prepare('SELECT evidence FROM history WHERE id = ?').get(id);
+      if (existing && evidence[0]?.startsWith('hook:') && (existing.evidence as string).startsWith('["hook:')) {
+        // A resumed session reports again under the same key; the later capture is the fuller one.
+        this.db.prepare('UPDATE history SET title = ?, summary = ?, files = ?, prompts = ?, signals = ? WHERE id = ?')
+          .run(title, summary, JSON.stringify(files), prompts ? JSON.stringify(prompts) : null, signals ? JSON.stringify(signals) : null, id);
+        return id;
+      }
+      if (existing) {
         if (Array.isArray(input.attachments) && input.attachments.length > 0) throw new Error('already recorded today; attachments not added');
         return id; // a repeat never copies files again
       }
@@ -201,10 +218,12 @@ export class BrainStore {
       return id;
     });
   }
-  history(project: string, limit = 20): BrainHistory[] {
+  /** kind 'agent' lists only agent-written rows, 'auto' only hook captures that hold real prompts. */
+  history(project: string, limit = 20, kind?: 'agent' | 'auto'): BrainHistory[] {
     const where = absolute(project);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('invalid limit');
-    return this.db.prepare('SELECT * FROM history WHERE project = ? ORDER BY at DESC, rowid DESC LIMIT ?').all(where, limit).map(row => ({
+    const filter = kind === 'agent' ? `AND evidence NOT LIKE '["hook:%'` : kind === 'auto' ? `AND evidence LIKE '["hook:%' AND prompts IS NOT NULL AND prompts != '[]'` : '';
+    return this.db.prepare(`SELECT * FROM history WHERE project = ? ${filter} ORDER BY at DESC, rowid DESC LIMIT ?`).all(where, limit).map(row => ({
       id: row.id as string, project: row.project as string, source: row.source as BrainSource, title: row.title as string,
       summary: row.summary as string, files: JSON.parse(row.files as string) as string[], outcome: row.outcome as string,
       evidence: JSON.parse(row.evidence as string) as string[], at: row.at as number,

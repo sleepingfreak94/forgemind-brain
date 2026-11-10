@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BrainStore, clientSources, containsSecret, defaultBrainDirectory } from './brain.js';
+import { BrainStore, clientSources, containsSecret, defaultBrainDirectory, redactSecrets } from './brain.js';
 import { contextText, resolveWorkspace } from './brain-mcp.js';
 import { readTranscript } from './transcript.js';
 
@@ -17,15 +17,6 @@ const RECORD_LINE = 'Before you finish, call the forgemind-brain tool brain_reco
 
 const red = (value: string): string => containsSecret(value) ? '[redacted]' : value;
 const sha = (value: string): string => createHash('sha256').update(value).digest('hex');
-
-export function cleanPrompt(text: string): string {
-  let t = String(text).replace(/<timestamp\b[^>]*>[\s\S]*?<\/timestamp>/gi, ' ');
-  const q = /<user_query\b[^>]*>([\s\S]*?)<\/user_query>/i.exec(t);
-  if (q) t = q[1] ?? '';
-  const tag = /^\s*<\/?[A-Za-z][\w:.-]*(?:\s[^>]*)?\/?>/;
-  while (tag.test(t)) t = t.replace(tag, '');
-  return t.replace(/\s+/g, ' ').trim();
-}
 
 function defaultChangedFiles(workspace: string): string[] {
   try {
@@ -89,12 +80,16 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   const prompts: string[] = [];
   let total = 0;
   for (const p of real.slice(0, MAX_PROMPTS)) {
-    const text = red(p.slice(0, MAX_PROMPT));
+    const text = redactSecrets(p).slice(0, MAX_PROMPT); // redact the whole text first, then cut
     if (total + text.length > MAX_PROMPT_TOTAL) break; // keep the earliest
     prompts.push(text); total += text.length;
   }
-  const signals = capture?.signals;
-  const title = real.length > 0 ? red(real[0]!.replace(/\s+/g, ' ').trim().slice(0, TITLE_PROMPT_CAP).trimEnd()) : `Session: ${files.length} files changed`;
+  const raw = capture?.signals;
+  const n = (x: number): number => Math.min(Math.max(0, Math.trunc(x)), 1e9);
+  const signals = raw && { prompts: n(raw.prompts), corrections: n(raw.corrections), correctionIndexes: raw.correctionIndexes.slice(0, MAX_PROMPTS).map(n),
+    model: raw.model === null ? null : redactSecrets(raw.model).slice(0, 100) || null, assistantTurns: n(raw.assistantTurns), toolErrors: n(raw.toolErrors),
+    durationMs: raw.durationMs === null ? null : n(raw.durationMs) };
+  const title = real.length > 0 ? redactSecrets(real[0]!.replace(/\s+/g, ' ').trim()).slice(0, TITLE_PROMPT_CAP).trimEnd() : `Session: ${files.length} files changed`;
   const summary = `${real.length} prompts, ${signals?.corrections ?? 0} corrections, ${files.length} files changed` + (signals?.model ? `, model ${signals.model}` : '');
   let id = typeof sessionId === 'string' && sessionId !== '' ? sessionId
     : sha(JSON.stringify([typeof transcript === 'string' ? transcript : workspace, new Date(now).toISOString().slice(0, 10)]));

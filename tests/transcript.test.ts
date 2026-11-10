@@ -9,10 +9,13 @@ const jl = (lines: object[]): string => lines.map(l => JSON.stringify(l)).join('
 const user = (content: unknown, extra: object = {}) => ({ type: 'user', message: { role: 'user', content }, ...extra });
 
 test('corrections: positives and negatives', () => {
-  for (const p of ['No, use tabs', 'nope', 'Wrong file', "that's not what I meant", 'Not what I asked', 'instead use sqlite', 'undo that', 'Revert the last change',
-    'stop', "don't touch the schema", 'You didn\'t run the tests', 'Actually, no'])
+  for (const p of ['No, use tabs', 'nope', 'Wrong file', "that's not what I meant", "that's not what I asked", 'Not what I asked', 'undo that',
+    "You didn't run the tests", 'Actually, no', 'why did you delete it', 'I told you to use X', 'I said tabs', 'it still fails', 'still broken',
+    'not working', 'wait, that is not right'])
     assert.ok(isCorrection(p), p);
-  for (const p of ['now add tests', 'note that the file is big', 'nothing else to add', 'Add a stop button', 'Can you undo the rename?', 'notes for later', 'looks good'])
+  for (const p of ['now add tests', 'note that the file is big', 'nothing else to add', 'Add a stop button', 'Can you undo the rename?', 'notes for later', 'looks good',
+    'No rush, also add tests', 'Stop the dev server and restart', "Don't forget to update the docs", 'Revert the version bump then release',
+    'Instead of npm use pnpm?', 'Nope that works, thanks', 'Do not touch the lockfile'])
     assert.ok(!isCorrection(p), p);
 });
 
@@ -69,4 +72,11 @@ test('readTranscript reads only the tail of a huge file and refuses relative or 
     assert.equal(readTranscript(dir), undefined);
     assert.equal(readTranscript(null), undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('more than 50 corrections: indexes are bounded, the count is not', () => {
+  const lines = [user('start'), ...Array.from({ length: 60 }, () => user('no, redo'))];
+  const r = parseTranscript(jl(lines));
+  assert.equal(r.signals.corrections, 60);
+  assert.equal(r.signals.correctionIndexes.length, 49);
 });
