@@ -242,3 +242,10 @@ test('migrate removes a stale migrating file; a stray hard link names itself in 
   unlinkSync(stale);
   new BrainStore(dir).close();
 }));
+
+test('migrate keeps a migrating file whose process is alive but not ours (EPERM)', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  const live = join(dir, '.brain.migrating-1-abc');
+  copyFileSync(legacyBrain(dir), live); chmodSync(live, 0o600);
+  migrateLegacy(dir);
+  assert.equal(existsSync(live), true);
+}));
