@@ -204,7 +204,7 @@ test('record validates limits and refuses secrets', () => withDir(dir => {
   s.close();
 }));
 
-test('version 1 and 2 databases migrate to 4 (history keeps rows, accepts codex); version 5 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('version 1 and 2 databases migrate to 5 (history keeps rows, accepts codex); version 6 is refused', { skip: process.platform === 'win32' }, () => withDir(dir => {
   const first = new BrainStore(dir);
   const id = first.propose(base); first.close();
   const file = join(dir, 'brain.sqlite');
@@ -226,12 +226,12 @@ test('version 1 and 2 databases migrate to 4 (history keeps rows, accepts codex)
   assert.equal(up.list()[0]!.id, id);
   up.close();
   const check = new DatabaseSync(file);
-  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
-  check.exec('PRAGMA user_version = 5'); check.close();
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 5);
+  check.exec('PRAGMA user_version = 6'); check.close();
   assert.throws(() => new BrainStore(dir), /unsupported/);
 }));
 
-test('version 3 upgrades to 4 in place and keeps history rows', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('version 3 upgrades to 5 in place and keeps history rows', { skip: process.platform === 'win32' }, () => withDir(dir => {
   new BrainStore(dir).close();
   const raw = new DatabaseSync(join(dir, 'brain.sqlite'));
   raw.exec(`DROP TABLE history; CREATE TABLE history (id TEXT PRIMARY KEY, project TEXT NOT NULL,
@@ -243,7 +243,7 @@ test('version 3 upgrades to 4 in place and keeps history rows', { skip: process.
   assert.deepEqual(s.history('/repo/a').map(h => [h.title, h.attachments]), [['v3 row', []]]);
   s.close();
   const check = new DatabaseSync(join(dir, 'brain.sqlite'));
-  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 4);
+  assert.equal(check.prepare('PRAGMA user_version').get()?.user_version, 5);
   check.close();
 }));
 

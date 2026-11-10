@@ -44,6 +44,24 @@ function absolute(value: unknown): string {
   return value;
 }
 const order = 'ORDER BY created_at, id';
+/**
+ * Schema v5 contract (shared by the capture, documents and reflect features):
+ * - history.prompts: JSON string[] of the user's exact prompts, secret-redacted; each <= 4000 chars, at most 50, total <= 20000. NULL when unknown.
+ * - history.signals: JSON {prompts: number, corrections: number, correctionIndexes: number[], model: string | null,
+ *   assistantTurns: number, toolErrors: number, durationMs: number | null}. NULL when unknown.
+ * - documents: kind 'adr' (number per project from 1; status proposed -> accepted | rejected, accepted -> superseded)
+ *   or 'recipe' (no number; status 'recorded'). fields is the JSON input: ADR {context, decision, alternatives, consequences};
+ *   recipe {goal, plan, prompts: string[], deadEnds: string[], verification, outcome, files: string[]}. body is the rendered markdown.
+ */
+export const DOCUMENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, project TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('adr','recipe')), number INTEGER, title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('proposed','accepted','rejected','superseded','recorded')),
+    body TEXT NOT NULL, fields TEXT NOT NULL, supersedes TEXT, superseded_by TEXT,
+    source TEXT NOT NULL CHECK(source IN ('claude-code','cursor','codex','cli','reflect')), session TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT;
+  CREATE UNIQUE INDEX IF NOT EXISTS documents_adr_number ON documents(project, number) WHERE kind = 'adr';
+  CREATE INDEX IF NOT EXISTS documents_project ON documents(project, kind, updated_at);`;
 
 /** Owner-only persistence of reviewed knowledge; one database file, `<directory>/brain.sqlite`. */
 export class BrainStore {
@@ -77,7 +95,7 @@ export class BrainStore {
       this.transaction(() => {
         // Read the version under the write lock so two opens cannot both run the upgrade.
         const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-        if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error('unsupported brain schema');
+        if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error('unsupported brain schema');
         // Version 2 history only allows three sources; rebuild it so 'codex' fits.
         if (version === 2) this.db.exec('ALTER TABLE history RENAME TO history_v2');
         this.db.exec(`
@@ -95,7 +113,12 @@ export class BrainStore {
         if (!this.db.prepare('PRAGMA table_info(history)').all().some(column => column.name === 'attachments'))
           this.db.exec('ALTER TABLE history ADD COLUMN attachments TEXT');
         if (version === 2) this.db.exec('INSERT INTO history (id, project, source, title, summary, files, outcome, evidence, at) SELECT * FROM history_v2; DROP TABLE history_v2');
-        if (version !== 4) this.db.exec('PRAGMA user_version = 4');
+        // Version 5: exact session prompts and measured signals on history, plus ADR and recipe documents.
+        const historyColumns = new Set(this.db.prepare('PRAGMA table_info(history)').all().map(column => column.name));
+        for (const column of ['prompts', 'signals'])
+          if (!historyColumns.has(column)) this.db.exec(`ALTER TABLE history ADD COLUMN ${column} TEXT`);
+        this.db.exec(DOCUMENTS_DDL);
+        if (version !== 5) this.db.exec('PRAGMA user_version = 5');
       });
     } catch (error) { this.db.close(); throw error; }
   }
