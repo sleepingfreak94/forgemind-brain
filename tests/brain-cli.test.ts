@@ -1,8 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runBrainCli } from '../src/cli.js';
 import { BrainStore } from '../src/brain.js';
 
@@ -91,4 +94,36 @@ test('history lists this workspace only', () => {
   assert.deepEqual(all.json.history.map((h: any) => h.title), ['second', 'first']);
   assert.equal(run(brain, ['history', '--workspace', ws, '--limit', '1']).json.history.length, 1);
   for (const bad of ['0', '201', 'abc']) assert.equal(run(brain, ['history', '--workspace', ws, '--limit', bad]).code, 2);
+});
+
+function legacy(brain: string): void {
+  const store = new BrainStore(brain); store.propose({ kind: 'lesson', text: 'old', evidence: [], reason: 'r' }); store.close();
+  const home = join(brain, 'brain', 'personal'); mkdirSync(home, { recursive: true, mode: 0o700 });
+  copyFileSync(join(brain, 'brain.sqlite'), join(home, 'brain.sqlite')); rmSync(join(brain, 'brain.sqlite'));
+}
+
+test('migrate command copies the legacy brain, then refuses to run again', { skip: process.platform === 'win32' }, () => {
+  const { brain, ws } = setup();
+  legacy(brain);
+  assert.equal(run(brain, ['list', '--workspace', ws]).code, 1);
+  const r = run(brain, ['migrate']);
+  assert.equal(r.code, 0); assert.deepEqual(r.json, { ok: true, entries: 1, history: 0 });
+  assert.equal(run(brain, ['list', '--workspace', ws]).json.entries.length, 1);
+  const again = run(brain, ['migrate']);
+  assert.equal(again.code, 2); assert.match(again.json.error, /already exists/);
+  assert.equal(run(brain, ['migrate', '--workspace', ws]).code, 2);
+});
+
+test('concurrent migrate calls: exactly one wins and the brain is intact', { skip: process.platform === 'win32' }, async () => {
+  const { brain } = setup();
+  legacy(brain);
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.js');
+  const go = () => new Promise<number>(done => { spawn('node', [cli, 'migrate', '--brain-dir', brain], { stdio: 'ignore' }).on('close', code => done(code ?? -1)); });
+  const codes = await Promise.all([go(), go(), go()]);
+  assert.deepEqual(codes.slice().sort(), [0, 2, 2]);
+  const db = new DatabaseSync(join(brain, 'brain.sqlite'));
+  assert.equal(db.prepare('PRAGMA integrity_check').get()?.integrity_check, 'ok');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM entries').get()?.n, 1);
+  db.close();
+  assert.equal(readdirSync(brain).filter(n => n.startsWith('.brain.migrating')).length, 0);
 });

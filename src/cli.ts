@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BrainStore, defaultBrainDirectory } from './brain.js';
 import type { BrainEntry, BrainKind, BrainStatus } from './brain.js';
+import { MigrationRefused, migrateLegacy } from './migrate.js';
 import { learnFromGit, learnFromGitHub } from './brain-learn.js';
 import type { BrainProposal } from './brain-learn.js';
 
@@ -18,6 +19,7 @@ const defaultRunner: CliRunner = (tool, args, cwd) => {
 };
 
 const commands: Record<string, { required: string[]; optional: string[] }> = {
+  migrate: { required: [], optional: [] },
   list: { required: ['workspace'], optional: ['status'] },
   add: { required: ['workspace', 'kind', 'text', 'reason'], optional: ['evidence', 'scope'] },
   show: { required: ['workspace', 'id'], optional: [] },
@@ -58,6 +60,10 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
 
 function execute(command: string, args: Record<string, string>, run: CliRunner): unknown {
   const dir = resolve(args['brain-dir'] ?? defaultBrainDirectory());
+  if (command === 'migrate') {
+    try { return { ok: true, ...migrateLegacy(dir) }; }
+    catch (error) { throw error instanceof MigrationRefused ? new UsageError(error.message) : error; }
+  }
   let workspace: string;
   try { workspace = realpathSync(resolve(args.workspace!)); } catch { throw new Error('workspace must be an existing directory'); }
   const store = new BrainStore(dir);

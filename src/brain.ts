@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, closeSync, copyFileSync, mkdirSync, openSync, realpathSync, renameSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { privatePath } from './validation.js';
@@ -44,17 +44,6 @@ function absolute(value: unknown): string {
 }
 const order = 'ORDER BY created_at, id';
 
-/** Old layout: <dir>/brain/personal/brain.sqlite. Copy it once (the original stays); company/ is never read. */
-function migrateLegacy(directory: string, path: string): void {
-  if (existsSync(path)) return;
-  const legacy = join(directory, 'brain', 'personal', 'brain.sqlite');
-  if (!existsSync(legacy)) return;
-  privatePath(legacy, false);
-  const tmp = `${path}.migrating`;
-  copyFileSync(legacy, tmp); chmodSync(tmp, 0o600); renameSync(tmp, path);
-  process.stderr.write(`forgemind brain: copied ${legacy} to ${path}\n`);
-}
-
 /** Owner-only persistence of reviewed knowledge; one database file, `<directory>/brain.sqlite`. */
 export class BrainStore {
   private readonly db: DatabaseSync;
@@ -64,7 +53,8 @@ export class BrainStore {
     if (realpathSync(directory) !== directory) throw new Error('brain storage must be canonical');
     privatePath(directory, true);
     const path = join(directory, 'brain.sqlite');
-    migrateLegacy(directory, path);
+    if (!existsSync(path) && existsSync(join(directory, 'brain', 'personal', 'brain.sqlite')))
+      throw new Error('legacy brain found; run `npm run brain -- migrate` after switching all configs');
     try { closeSync(openSync(path, 'wx', 0o600)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     privatePath(path, false);
@@ -74,10 +64,11 @@ export class BrainStore {
     }
     this.db = new DatabaseSync(path, { timeout: 1000, enableForeignKeyConstraints: true });
     try {
-      const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('unsupported brain schema');
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;');
       this.transaction(() => {
+        // Read the version under the write lock so two opens cannot both run the upgrade.
+        const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
+        if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('unsupported brain schema');
         // Version 2 history only allows three sources; rebuild it so 'codex' fits.
         if (version === 2) this.db.exec('ALTER TABLE history RENAME TO history_v2');
         this.db.exec(`

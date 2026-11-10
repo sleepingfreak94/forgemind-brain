@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { BrainStore, defaultBrainDirectory } from '../src/brain.js';
+import { MigrationRefused, migrateLegacy } from '../src/migrate.js';
 
 function withDir(run: (dir: string) => void): void {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'brain-')));
@@ -88,27 +89,57 @@ function legacyBrain(dir: string): string {
   return file;
 }
 
-test('migrates <dir>/brain/personal/brain.sqlite by copying it', { skip: process.platform === 'win32' }, () => withDir(dir => {
+test('open refuses to start an empty brain next to a legacy one', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  legacyBrain(dir);
+  assert.throws(() => new BrainStore(dir), /legacy brain found; run `npm run brain -- migrate`/);
+  assert.equal(existsSync(join(dir, 'brain.sqlite')), false);
+}));
+
+test('migrate copies a consistent snapshot and leaves the legacy file alone', { skip: process.platform === 'win32' }, () => withDir(dir => {
   const legacy = legacyBrain(dir);
   const company = join(dir, 'brain', 'company'); mkdirSync(company, { mode: 0o700 });
   const other = new DatabaseSync(join(company, 'brain.sqlite')); other.exec('CREATE TABLE secret_company (x TEXT)'); other.close();
   const before = readFileSync(legacy);
+  assert.deepEqual(migrateLegacy(dir), { entries: 1, history: 0 });
+  assert.equal(statSync(join(dir, 'brain.sqlite')).mode & 0o777, 0o600);
+  assert.deepEqual(readFileSync(legacy), before);
+  assert.deepEqual(readdirSync(dir).sort(), ['brain', 'brain.sqlite']);
   const s = new BrainStore(dir);
   assert.equal(s.list().length, 1);
   s.propose({ ...base, text: 'added after the move' }); s.close();
-  assert.equal(statSync(join(dir, 'brain.sqlite')).mode & 0o777, 0o600);
   assert.deepEqual(readFileSync(legacy), before);
-  assert.equal(statSync(legacy).mode & 0o777, 0o600);
   const check = new DatabaseSync(join(dir, 'brain.sqlite'));
   assert.equal(check.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'secret_company'").get(), undefined);
   check.close();
 }));
 
-test('migration runs once and never overwrites the new file', { skip: process.platform === 'win32' }, () => withDir(dir => {
-  legacyBrain(dir);
-  const s = new BrainStore(dir); s.propose({ ...base, text: 'only in the new file' }); s.close();
-  const reopened = new BrainStore(dir);
-  assert.equal(reopened.list().length, 2); reopened.close();
+test('migrate refuses when brain.sqlite exists or there is no legacy file', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  assert.throws(() => migrateLegacy(dir), MigrationRefused);
+  const legacy = legacyBrain(dir);
+  copyFileSync(legacy, join(dir, 'brain.sqlite')); chmodSync(join(dir, 'brain.sqlite'), 0o600);
+  const mine = readFileSync(join(dir, 'brain.sqlite'));
+  assert.throws(() => migrateLegacy(dir), /already exists/);
+  assert.deepEqual(readFileSync(join(dir, 'brain.sqlite')), mine);
+  assert.deepEqual(readdirSync(dir).sort(), ['brain', 'brain.sqlite']);
+}));
+
+test('migrate takes the committed rows from a legacy file with a hot journal', { skip: process.platform === 'win32' }, () => withDir(dir => {
+  const legacy = legacyBrain(dir);
+  const live = new DatabaseSync(legacy);
+  live.exec('PRAGMA cache_size = 1; PRAGMA synchronous = FULL');
+  live.exec('BEGIN');
+  const insert = live.prepare("INSERT INTO entries VALUES (?, 'lesson', NULL, ?, '[]', 'r', 'proposed', 1, NULL, NULL)");
+  for (let i = 0; i < 300; i++) insert.run(`x${i}`, 'u'.repeat(1500) + i);
+  // Snapshot the crash state: spilled db pages plus the journal that can undo them.
+  const crash = join(dir, 'crash'); mkdirSync(crash);
+  copyFileSync(legacy, join(crash, 'brain.sqlite')); copyFileSync(legacy + '-journal', join(crash, 'brain.sqlite-journal'));
+  live.exec('ROLLBACK'); live.close();
+  copyFileSync(join(crash, 'brain.sqlite'), legacy); copyFileSync(join(crash, 'brain.sqlite-journal'), legacy + '-journal');
+  assert.equal(existsSync(legacy + '-journal'), true);
+  assert.deepEqual(migrateLegacy(dir), { entries: 1, history: 0 });
+  const check = new DatabaseSync(join(dir, 'brain.sqlite'));
+  assert.equal(check.prepare('PRAGMA integrity_check').get()?.integrity_check, 'ok');
+  check.close();
 }));
 
 test('permissions, links and schema version', { skip: process.platform === 'win32' }, () => withDir(dir => {
