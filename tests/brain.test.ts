@@ -265,3 +265,12 @@ test('migrate keeps a migrating file whose process is alive but not ours (EPERM)
   migrateLegacy(dir);
   assert.equal(existsSync(live), true);
 }));
+
+test('redactSecrets replaces only the secret spans', async () => {
+  const { redactSecrets, containsSecret } = await import('../src/brain.js');
+  assert.equal(redactSecrets('use ghp_' + 'a'.repeat(24) + ' now'), 'use [redacted] now');
+  assert.equal(redactSecrets('fix the auth token: refresh flow'), 'fix the auth [redacted] flow');
+  assert.equal(redactSecrets('a\npassword=x1 y\nb'), 'a\n[redacted] y\nb');
+  assert.equal(redactSecrets('nothing here'), 'nothing here');
+  assert.ok(!containsSecret(redactSecrets('secret: abc sk-' + 'q'.repeat(20))));
+});
