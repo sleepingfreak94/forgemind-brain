@@ -94,7 +94,7 @@ function execute(command: string, args: Record<string, string>, run: CliRunner, 
   if (command === 'reflect') {
     if ('last' in args) return { ok: true, ...lastReport(dir) };
     return { ok: true, ...reflect(dir, { days: args.days ? Number(args.days) : 2, dryRun: 'dry-run' in args, run: options.model, custom: parseRunners(args.runner), spawn: options.reflect?.spawn, has: options.reflect?.has,
-      filter: { sources: args.sources ? args.sources.split(',') : defaultSources, projects: args.projects?.split(',') } }) };
+      filter: { sources: args.sources ? args.sources.split(',') : [...new Set([...defaultSources, ...Object.keys(parseRunners(args.runner))])], projects: args.projects?.split(',') } }) };
   }
   let workspace: string;
   try { workspace = realpathSync(resolve(args.workspace!)); } catch { throw new Error('workspace must be an existing directory'); }

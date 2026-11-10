@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runBrainCli } from '../src/cli.js';
 import { BrainStore } from '../src/brain.js';
-import { reflect } from '../src/reflect.js';
+import { reflect, defaultSources } from '../src/reflect.js';
 import { codexArgs, cursorArgs, claudeArgs, makeCodexRunner, makeCursorRunner, makeCustomRunner, parseCustom, planFor, resultText } from '../src/reflect-runners.js';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'brain-routing-')));
@@ -44,7 +44,7 @@ test('a source with no rows or no CLI is skipped with a note; the others still r
   row('claude01', 'claude-code', 'a'); row('cursor01', 'cursor', 'b');
   let ran = 0;
   const spawn = ((cmd: string) => { ran++; assert.equal(cmd, 'claude'); return { status: 0, stdout: JSON.stringify({ result: ok }), stderr: '' }; }) as any;
-  const r = reflect(brain, { days: 2, now, spawn, has: c => c !== 'cursor-agent' });
+  const r = reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor'] }, spawn, has: c => c !== 'cursor-agent' });
   assert.equal(ran, 1);
   assert.deepEqual(r.sources, [{ source: 'claude-code', status: 'ok' }, { source: 'cursor', status: '`cursor-agent` not found on PATH' }]);
   assert.match(readFileSync(r.report as string, 'utf8'), /Skipped: `cursor-agent` not found on PATH/);
@@ -55,15 +55,15 @@ test('a failing source does not stop others; all failing is an error', () => {
   row('claude01', 'claude-code', 'a'); row('cursor01', 'cursor', 'b');
   let call = 0;
   const run = () => { if (call++ === 0) throw new Error('boom'); return ok; };
-  assert.match(readFileSync(reflect(brain, { days: 2, now, run }).report as string, 'utf8'), /Skipped: failed: boom/);
-  assert.throws(() => reflect(brain, { days: 2, now, run: () => { throw new Error('down'); } }), /down/);
+  assert.match(readFileSync(reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor'] }, run }).report as string, 'utf8'), /Skipped: failed: boom/);
+  assert.throws(() => reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor'] }, run: () => { throw new Error('down'); } }), /down/);
 });
 
 test('proposals can only cite ids from their own source packet', () => {
   const { brain, row } = setup();
   row('claude01', 'claude-code', 'a'); row('cursor01', 'cursor', 'b');
   const answer = (id: string) => JSON.stringify({ summary: 's', proposals: [{ project: null, kind: 'lesson', text: `tip ${id}`, reason: 'r', evidence: [id] }] });
-  const r = reflect(brain, { days: 2, now, run: prompt => answer(prompt.includes('claude01') ? 'cursor01' : 'cursor01') });
+  const r = reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor'] }, run: prompt => answer(prompt.includes('claude01') ? 'cursor01' : 'cursor01') });
   assert.equal((r.proposed as string[]).length, 1); // cited by the cursor source only; the claude source's citation was dropped
   assert.deepEqual((r.sources as any[]).map(s => s.status), ['ok', 'ok']);
 });
@@ -146,7 +146,7 @@ test('a personal project entry stays out of another source packet; global entrie
   s.propose({ kind: 'lesson', text: 'OFFICE entry', evidence: [], reason: 'r', project: '/office' });
   s.propose({ kind: 'lesson', text: 'GLOBAL entry', evidence: [], reason: 'r' }); s.close();
   const prompts: Record<string, string> = {};
-  reflect(brain, { days: 2, now, run: prompt => { prompts[prompt.includes('cursor01') ? 'cursor' : 'claude'] = prompt; return ok; } });
+  reflect(brain, { days: 2, now, filter: { sources: ['claude-code', 'cursor'] }, run: prompt => { prompts[prompt.includes('cursor01') ? 'cursor' : 'claude'] = prompt; return ok; } });
   assert.ok(!prompts.cursor!.includes('PERSONAL') && prompts.cursor!.includes('OFFICE') && prompts.cursor!.includes('GLOBAL'));
   assert.ok(!prompts.claude!.includes('OFFICE') && prompts.claude!.includes('PERSONAL'));
 });
@@ -167,4 +167,8 @@ test('codex is not in the default sources; a failed report write still returns t
   assert.equal(r.report, undefined);
   assert.ok(typeof r.reportError === 'string');
   assert.equal((r.proposed as string[]).length, 1);
+});
+
+test('default sources are claude-code only (cursor and codex cannot fully disable tools and MCP)', () => {
+  assert.deepEqual(defaultSources, ['claude-code']);
 });

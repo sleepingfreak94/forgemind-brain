@@ -292,7 +292,6 @@ export class BrainStore {
       }
     });
   }
-
   /** The open connection and its write transaction, for documents.ts. */
   get connection(): { db: DatabaseSync; transaction: <T>(work: () => T) => T } {
     return { db: this.db, transaction: work => this.transaction(work) };

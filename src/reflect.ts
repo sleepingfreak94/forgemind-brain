@@ -17,7 +17,8 @@ const DAY = 86400000;
 
 export interface Filter { sources: string[]; projects?: string[] | undefined }
 // codex is opt-in: its runner is untested.
-export const defaultSources: string[] = clientSources.filter(s => s !== 'codex');
+// Only claude can run with tools, MCP, hooks and plugins all off; cursor and codex are opt-in (see docs: Runners and isolation).
+export const defaultSources: string[] = ['claude-code'];
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v : '').slice(0, n);
 const json = <T>(v: unknown, fallback: T): T => { try { return typeof v === 'string' ? JSON.parse(v) as T : fallback; } catch { return fallback; } };
