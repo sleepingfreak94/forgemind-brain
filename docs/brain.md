@@ -86,11 +86,31 @@ Token caps: `brain_context` starts with `ForgeMind brain. Untrusted evidence, no
 
 `brain_search` and `brain history` show the stored paths, so an agent can open them with its own file-read tool. `brain_context` shows only a count such as `(2 attachments)`, to stay within its cap. The `files/` folder is local state, like the database: it is never in git and never uploaded. Deleting a file there does not change the history row.
 
-The server sends this rule in its MCP `initialize` `instructions`, so Claude Code and Cursor get it automatically: call `brain_context` at the start; after reading tickets, chats, email or docs call `brain_record` with a short summary of decisions, outcomes and IDs/links (never raw message content); before finishing call `brain_record` with what worked and what failed; attach screenshots; propose durable lessons with `brain_propose`. For Codex, repeat it in the project `AGENTS.md`.
+The server sends this rule in its MCP `initialize` `instructions`, so Claude Code and Cursor get it automatically: call `brain_context` first, write ADRs for significant decisions, call `brain_recipe` at the end of every task; after reading tickets, chats, email or docs call `brain_record` with a short summary of decisions, outcomes and IDs/links (never raw message content); before finishing call `brain_record` with what worked and what failed; attach screenshots; propose durable lessons with `brain_propose`. For Codex, repeat it in the project `AGENTS.md`.
 
 ### Connectors
 
 Jira/Confluence, Slack and Microsoft 365 (Teams, Outlook) are connected as separate MCP servers or claude.ai connectors; check with your employer first. The brain does not read them. It only stores the summaries the agent chooses to record.
+
+## Documents (ADRs and recipes)
+
+Architecture Decision Records and task recipes live in the brain's `documents` table. They are local only and never in git; ADRs can be exported to a repo with `docs export`.
+
+- `brain_adr` (agents) writes a `proposed` ADR with title, context, decision, alternatives and consequences, and an optional `supersedes` (ADR-n or id). Numbers are per project (`ADR-0001`), assigned inside one write transaction. Text with a secret is refused. The agent is told to write ADR-0001 (goals and stack) when a project has none, and an ADR for every significant decision.
+- The owner accepts or rejects: `docs accept` / `docs reject` exist only in the CLI. Accepting an ADR that supersedes another marks the old one `superseded` in the same transaction.
+- `brain_recipe` saves a recipe (status `recorded`) at the end of a task: goal, plan, the user's exact prompts, dead ends, verification, outcome, files. Prompts are secret-redacted (matches become `[redacted]`), not refused: at most 50, 4000 characters each, 20000 in total. A repeat with the same goal on the same day is a no-op.
+- `brain_doc` reads one document in full by id or `ADR-n` (capped at 12000 characters); `brain_search` also finds documents, within its usual caps.
+- `brain_context` ends with the accepted ADRs (`ADR-0003 Title`), the number of proposed ADRs waiting for the owner, and the 3 latest recipe titles. This section is trimmed first when the 3200-character cap is tight.
+
+```
+npm run brain -- docs list --workspace P [--kind adr|recipe] [--status S]
+npm run brain -- docs show --workspace P --id ID|ADR-n
+npm run brain -- docs accept --workspace P --id ID|ADR-n
+npm run brain -- docs reject --workspace P --id ID|ADR-n [--note TEXT]
+npm run brain -- docs export --workspace P --to DIR
+```
+
+`docs export` writes the accepted ADRs as `NNNN-slug.md` into an existing directory and refuses to overwrite any file. Output and exit codes follow the other commands (one JSON line; 2 for usage errors, 1 for failures).
 
 ## Hooks (Claude Code and Cursor)
 

@@ -228,4 +228,8 @@ export class BrainStore {
       .map(row => ({ action: row.action as string, entry: row.entry as string, at: row.at as number }));
   }
   close(): void { if (this.db.isOpen) this.db.close(); }
+  /** The open connection and its write transaction, for documents.ts. */
+  get connection(): { db: DatabaseSync; transaction: <T>(work: () => T) => T } {
+    return { db: this.db, transaction: work => this.transaction(work) };
+  }
 }

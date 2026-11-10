@@ -7,6 +7,7 @@ import type { BrainEntry, BrainKind, BrainStatus } from './brain.js';
 import { MigrationRefused, migrateLegacy } from './migrate.js';
 import { learnFromGit, learnFromGitHub } from './brain-learn.js';
 import type { BrainProposal } from './brain-learn.js';
+import { DOC_COMMANDS, DOC_STATUSES, docsCommand } from './documents-cli.js';
 
 class UsageError extends Error {}
 
@@ -27,12 +28,15 @@ const commands: Record<string, { required: string[]; optional: string[] }> = {
   retire: { required: ['workspace', 'id'], optional: [] },
   reject: { required: ['workspace', 'id'], optional: ['note'] },
   learn: { required: ['workspace'], optional: ['source', 'limit'] },
-  history: { required: ['workspace'], optional: ['limit'] }
+  history: { required: ['workspace'], optional: ['limit'] },
+  ...DOC_COMMANDS
 };
 // Usage: history --workspace PATH [--limit 1-200]
 
 function parse(argv: string[]): { command: string; args: Record<string, string> } {
   if (!Array.isArray(argv) || argv.length === 0) throw new UsageError('missing command');
+  // `docs <sub>` is the command `docs-<sub>`.
+  if (argv[0] === 'docs') argv = [`docs-${String(argv[1])}`, ...argv.slice(2)];
   const command = String(argv[0]);
   const spec = Object.hasOwn(commands, command) ? commands[command] : undefined;
   if (!spec) throw new UsageError('unknown command');
@@ -50,8 +54,9 @@ function parse(argv: string[]): { command: string; args: Record<string, string> 
   }
   for (const key of spec.required) if (!(key in args)) throw new UsageError(`missing --${key}`);
   if ('scope' in args && args.scope !== 'project' && args.scope !== 'global') throw new UsageError('invalid --scope');
-  if ('status' in args && !['proposed', 'approved', 'rejected', 'retired'].includes(args.status!)) throw new UsageError('invalid --status');
-  if ('kind' in args && !['convention', 'lesson', 'decision', 'pattern'].includes(args.kind!)) throw new UsageError('invalid --kind');
+  const docs = command.startsWith('docs-');
+  if ('status' in args && !(docs ? DOC_STATUSES : ['proposed', 'approved', 'rejected', 'retired']).includes(args.status!)) throw new UsageError('invalid --status');
+  if ('kind' in args && !(docs ? ['adr', 'recipe'] : ['convention', 'lesson', 'decision', 'pattern']).includes(args.kind!)) throw new UsageError('invalid --kind');
   if ('source' in args && !['git', 'github', 'all'].includes(args.source!)) throw new UsageError('invalid --source');
   if ('limit' in args && (!/^\d+$/.test(args.limit!) || Number(args.limit) < 1 || Number(args.limit) > 1000)) throw new UsageError('invalid --limit');
   if (command === 'history' && 'limit' in args && Number(args.limit) > 200) throw new UsageError('invalid --limit');
@@ -73,6 +78,7 @@ function execute(command: string, args: Record<string, string>, run: CliRunner):
       if (!entry) throw new Error('unknown brain entry');
       return entry;
     };
+    if (command.startsWith('docs-')) return docsCommand(command, args, store, workspace);
     switch (command) {
       case 'list': {
         const entries = store.list(args.status ? { status: args.status as BrainStatus } : {})
