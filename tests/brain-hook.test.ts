@@ -8,7 +8,7 @@ import { BrainStore } from '../src/brain.js';
 import { contextText } from '../src/brain-mcp.js';
 import { runBrainHook, runBrainHookDetailed } from '../src/brain-hook.js';
 
-const LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
+const LINE = 'Before you finish, call the forgemind-brain tools brain_record (what worked and what failed) and brain_recipe (plan, the exact prompts, dead ends, verification, outcome). Record significant decisions with brain_adr.';
 const NOW = Date.parse('2026-10-24T10:00:00Z');
 let root: string, brain: string, ws: string, sub: string, other: string, tdir: string;
 const seq = { n: 0 };

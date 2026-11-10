@@ -13,7 +13,7 @@ const MAX_INPUT = 1048576;
 const MAX_PROMPT = 4000, MAX_PROMPTS = 50, MAX_PROMPT_TOTAL = 20000;
 const TITLE_PROMPT_CAP = 160;
 const MAX_FILES = 200;
-const RECORD_LINE = 'Before you finish, call the forgemind-brain tool brain_record with a short title, summary, files changed and outcome.';
+const RECORD_LINE = 'Before you finish, call the forgemind-brain tools brain_record (what worked and what failed) and brain_recipe (plan, the exact prompts, dead ends, verification, outcome). Record significant decisions with brain_adr.';
 
 const red = (value: string): string => containsSecret(value) ? '[redacted]' : value;
 // Cutting redacted text can create a new match (e.g. a cut AKIA run), so re-redact until stable; give up rather than store a secret.

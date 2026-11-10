@@ -145,7 +145,7 @@ export function createRecipe(store: BrainStore, project: string, source: DocSour
     if (db.prepare('SELECT 1 FROM documents WHERE id = ?').get(id)) return false;
     const now = Date.now();
     const body = renderRecipe(goal, now, f);
-    if (body.length > BODY_MAX) throw new Error('invalid body');
+    if (body.length > BODY_MAX) throw new Error(`recipe too long: ${body.length} chars rendered, limit ${BODY_MAX}; shorten the plan, prompts or dead ends`);
     db.prepare("INSERT INTO documents VALUES (?, ?, 'recipe', NULL, ?, 'recorded', ?, ?, NULL, NULL, ?, ?, ?, ?)")
       .run(id, project, goal, body, JSON.stringify(f), source, session ?? null, now, now);
     audit(store, 'doc-create', id, now);

@@ -64,7 +64,7 @@ export function adrSection(store: BrainStore, project: string, room: number): st
   const reserve = tail.reduce((sum, line) => sum + line.length + 1, 0) + 40;
   let added = 0;
   for (const line of shown) if (size + line.length + 1 + reserve <= budget) { out.push(line); size += line.length + 1; added++; }
-  if (added < shown.length) { const more = `(${shown.length - added} more; use brain_doc)`; out.push(more); size += more.length + 1; }
+  if (added < shown.length) { const more = `(${shown.length - added} more; use brain_doc)`; if (fit(more)) { out.push(more); size += more.length + 1; } }
   for (const line of tail) if (fit(line)) { out.push(line); size += line.length + 1; }
   return out.length ? '\n' + out.join('\n') : '';
 }
