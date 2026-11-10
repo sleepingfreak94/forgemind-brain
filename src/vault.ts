@@ -36,21 +36,29 @@ function writeNotes(dir: string, notes: Map<string, string>): void {
 
 function withVaultLock<T>(brainDir: string, work: () => T): T {
   const lock = join(brainDir, 'vault.lock');
-  try { if (Date.now() - statSync(lock).mtimeMs > 1800000) rmSync(lock); } catch { /* none */ }
+  mkdirSync(brainDir, { recursive: true, mode: 0o700 });
+  try {
+    const before = statSync(lock);
+    if (Date.now() - before.mtimeMs > 1800000) {
+      const again = statSync(lock); // re-check, as reflect does, so a fresh lock is never removed
+      if (again.ino === before.ino && again.mtimeMs === before.mtimeMs) rmSync(lock);
+    }
+  } catch { /* none */ }
   let fd: number;
   try { fd = openSync(lock, 'wx', 0o600); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('another vault export is in progress'); throw error; }
   try { return work(); } finally { closeSync(fd); rmSync(lock, { force: true }); }
 }
-/** Siblings left by an interrupted swap: restore the old vault if `to` is gone, drop stale temp dirs, flag leftovers (they may hold user files). */
+/** Siblings left by an interrupted swap (exactly the names this exporter creates, and only if they carry the marker): restore the old vault if `to` is gone, drop stale temp dirs, flag leftovers (they may hold user files). */
 function recover(to: string): string[] {
   const warnings: string[] = [], parent = dirname(to), base = basename(to);
+  const mine = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(tmp|old)-\\d+-\\d+$`);
   let names: string[] = [];
-  try { names = readdirSync(parent); } catch { return warnings; }
-  for (const n of names.filter(n => n.startsWith(`${base}.tmp-`))) rmSync(join(parent, n), { recursive: true, force: true });
-  for (const n of names.filter(n => n.startsWith(`${base}.old-`))) {
+  try { names = readdirSync(parent).filter(n => mine.test(n) && existsSync(join(parent, n, MARKER))); } catch { return warnings; }
+  for (const n of names.filter(n => n.includes('.tmp-'))) rmSync(join(parent, n), { recursive: true, force: true });
+  for (const n of names.filter(n => n.includes('.old-'))) {
     const old = join(parent, n);
-    if (!existsSync(to) && existsSync(join(old, MARKER))) { renameSync(old, to); warnings.push(`restored the vault from an interrupted export (${n})`); }
+    if (!existsSync(to)) { renameSync(old, to); warnings.push(`restored the vault from an interrupted export (${n})`); }
     else warnings.push(`leftover ${old} from an interrupted export; it may hold your files`);
   }
   return warnings;
@@ -65,12 +73,12 @@ function doExport(brainDir: string, options: ExportOptions): Record<string, unkn
   if (!isAbsolute(requested)) throw new Error('--to must be an absolute path');
   const to = resolveReal(requested);
   if (!options.allowRepo && insideRepo(to)) throw new Error('refusing to write the vault inside a git repository (use --allow-repo to override)');
-  const warnings = recover(to);
-  const exists = existsSync(to);
-  if (exists) {
+  if (existsSync(to)) {
     if (!lstatSync(to).isDirectory()) throw new Error('vault path is not a directory');
     if (readdirSync(to).length > 0 && !existsSync(join(to, MARKER))) throw new Error(`refusing to overwrite a directory that is not a ForgeMind vault (no ${MARKER})`);
   }
+  const warnings = recover(to);
+  const exists = existsSync(to);
   const now = options.now ?? new Date();
   const built = buildNotes(brainDir, options, options.caps ?? defaultCaps, now);
   if (['Mobile Documents', 'CloudStorage'].some(d => to.startsWith(join(homedir(), 'Library', d))) || /Dropbox|OneDrive|Google Drive/.test(to))
@@ -79,14 +87,20 @@ function doExport(brainDir: string, options: ExportOptions): Record<string, unkn
   const tmp = `${to}.tmp-${process.pid}-${Date.now()}`, trash = `${to}.old-${process.pid}-${Date.now()}`;
   try {
     mkdirSync(tmp, { mode: 0o700 }); chmodSync(tmp, 0o700);
-    writeNotes(tmp, built.notes);
     writeFileSync(join(tmp, MARKER), 'ForgeMind brain vault: generated, read-only, safe to delete. Regenerate with `brain export --obsidian`.\n', { mode: 0o600 });
+    writeNotes(tmp, built.notes);
     if (exists) renameSync(to, trash);
     try { renameSync(tmp, to); } catch (error) { if (exists) renameSync(trash, to); throw error; }
     // Move (not copy) the user's entries over: after a crash they are in `to` or in the trash sibling, never lost.
     if (exists) {
-      for (const k of readdirSync(trash)) if (!GENERATED.has(k)) renameSync(join(trash, k), join(to, k));
-      rmSync(trash, { recursive: true, force: true });
+      const generated = new Set([...GENERATED].map(g => g.toLowerCase())), have = new Set(readdirSync(to).map(k => k.toLowerCase())), skipped: string[] = [];
+      for (const k of readdirSync(trash)) {
+        if (generated.has(k.toLowerCase())) { if (!GENERATED.has(k)) skipped.push(k); continue; } // user entry that collides with a generated name (APFS is case-insensitive)
+        if (have.has(k.toLowerCase())) { skipped.push(k); continue; }
+        renameSync(join(trash, k), join(to, k));
+      }
+      if (skipped.length) warnings.push(`kept ${skipped.join(', ')} in ${trash} because the names collide with generated notes`);
+      else rmSync(trash, { recursive: true, force: true });
     }
   } finally { rmSync(tmp, { recursive: true, force: true }); }
   const truncated = built.omitted > 0;

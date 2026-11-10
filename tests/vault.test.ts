@@ -203,7 +203,7 @@ test('regeneration keeps every user entry across two exports', () => {
 });
 
 test('HTML cannot survive in unfenced text, including split-tag bypasses', () => {
-  const s = seed(), evil = '<scr<script>ipt>alert(1)</script> <ifr<iframe>ame src=x> <img src=https://x>';
+  const s = seed(), evil = '<scr<script>ipt>alert(1)</script> <ifr<iframe>ame src=x> <img src=https://x> ![pixel](https://x/p.png)';
   const db = new DatabaseSync(join(s.brain, 'brain.sqlite'));
   db.prepare('UPDATE history SET summary = ?').run(evil);
   db.prepare("UPDATE documents SET body = body || ?").run(evil);
@@ -212,9 +212,9 @@ test('HTML cannot survive in unfenced text, including split-tag bypasses', () =>
   const to = join(s.base, 'v'); exported(s.brain, to, { prompts: false });
   for (const f of readdirSync(to, { recursive: true }).map(String).filter(f => f.endsWith('.md'))) {
     const body = read(to, f).replace(/^---\n[\s\S]*?\n---\n/, '');
-    assert.ok(!/<[a-z/]/i.test(body), `${f}: ${body.match(/<[a-z/][^\n]*/i)}`);
+    assert.ok(!/(^|[^\\])!\[/.test(body), 'image'); assert.ok(!/<[a-z/]/i.test(body), `${f}: ${body.match(/<[a-z/][^\n]*/i)}`);
   }
-  assert.match(read(to, `Sessions/${files(to, 'Sessions')[0]}`), /&lt;img src=https:\/\/x&gt;/);
+  assert.match(read(to, `Sessions/${files(to, 'Sessions')[0]}`), /&lt;img src=https:\/\/x> !\\\[pixel\]/);
 });
 
 test('case-insensitive project name collisions are disambiguated', () => {
@@ -237,7 +237,7 @@ test('cloud warning covers Library/CloudStorage (path match)', () => {
 test('interrupted swap is restored, stale temp dirs are cleaned, a held lock refuses', () => {
   const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
   writeFileSync(join(to, 'mine.md'), 'm');
-  renameSync(to, `${to}.old-1-1`); mkdirSync(`${to}.tmp-1-1`); // crash after the first rename
+  renameSync(to, `${to}.old-1-1`); mkdirSync(`${to}.tmp-1-1`); writeFileSync(`${to}.tmp-1-1/.forgemind-vault`, ''); // crash after the first rename
   assert.ok(!existsSync(to));
   const r = exported(s.brain, to) as any;
   assert.ok(r.warnings.some((w: string) => /restored/.test(w)));
@@ -274,4 +274,31 @@ test('session titles are capped', () => {
   const f = files(to, 'Sessions').find(f => f.includes('TTTT'))!;
   const note = read(to, `Sessions/${f}`);
   assert.ok(!note.includes('T'.repeat(121)));
+});
+
+test('recover never touches user folders that merely look similar', () => {
+  const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
+  mkdirSync(`${to}.tmp-mybackup`); writeFileSync(`${to}.tmp-mybackup/precious.txt`, 'p');
+  mkdirSync(`${to}.old-notes`); mkdirSync(`${to}.tmp-1-1`); writeFileSync(`${to}.tmp-1-1/a`, 'no marker');
+  exported(s.brain, to);
+  assert.equal(read(s.base, 'v.tmp-mybackup/precious.txt'), 'p');
+  assert.ok(existsSync(`${to}.old-notes`)); assert.ok(existsSync(`${to}.tmp-1-1/a`));
+});
+
+test('first export into a brand-new brain dir works', () => {
+  const s = seed(), brain = join(s.base, 'fresh', 'brain');
+  assert.ok(exported(brain, join(s.base, 'v')));
+});
+
+test('a user entry colliding with a generated name case-insensitively is kept aside with a warning', () => {
+  const s = seed(), to = join(s.base, 'v'); exported(s.brain, to);
+  const sensitive = !existsSync(join(to, 'adrs')); // false on case-insensitive APFS, where `adrs` is the generated folder itself
+  if (sensitive) mkdirSync(join(to, 'adrs'));
+  mkdirSync(join(to, 'keepme')); writeFileSync(join(to, 'keepme/f'), 'k');
+  const r = exported(s.brain, to) as any;
+  assert.equal(read(to, 'keepme/f'), 'k');
+  if (!sensitive) return;
+  const left = readdirSync(s.base).find(f => f.startsWith('v.old-'))!;
+  assert.ok(left && existsSync(join(s.base, left, 'adrs')));
+  assert.ok(r.warnings.some((w: string) => w.includes('adrs')));
 });

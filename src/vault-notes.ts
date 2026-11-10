@@ -18,7 +18,7 @@ export function safeName(value: string, max = 60): string {
 }
 const hash6 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 6);
 /** Unfenced note text: no HTML tag can survive (script, iframe, img beacons, split-tag bypasses). Prompts stay exact inside code fences. */
-const esc = (s: string): string => s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = (s: string): string => s.replace(/</g, '&lt;').replace(/!\[/g, '!\\['); // also: no remote markdown images
 /** A YAML double-quoted scalar (JSON is valid YAML): newlines and quotes are escaped, so a value never leaves its line. */
 const q = (s: string): string => JSON.stringify(s).replace(new RegExp('[\\u0085\\u2028\\u2029]', 'g'), c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const frontmatter = (f: Record<string, string | number | null | string[]>): string => '---\n' + Object.entries(f).map(([k, v]) =>
