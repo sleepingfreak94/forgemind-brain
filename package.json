@@ -9,6 +9,7 @@
     "typecheck": "tsc -p config/tsconfig.json --noEmit",
     "test": "npm run build && node --test --test-timeout=60000 dist/tests/*.test.js",
     "brain": "npm run build && node dist/src/cli.js",
+    "install-local": "npm run build && node dist/src/install-local.js",
     "brain:mcp": "node dist/src/brain-mcp.js",
     "brain:hook": "node dist/src/brain-hook.js"
   },

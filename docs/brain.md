@@ -46,20 +46,20 @@ After each run, failed checks, revise or blocked review findings and the stop re
 
 ## Use from Claude Code and Cursor
 
-`forgemind-brain` is a local MCP server over stdio. Run `npm run build` first, and register `node` directly (not `npm run`, whose banner would corrupt the JSON-RPC stream).
+`forgemind-brain` is a local MCP server over stdio. Register `node` directly (not `npm run`, whose banner would corrupt the JSON-RPC stream).
 
-In the examples below, replace /absolute/path/to/forgemind with the absolute path of your ForgeMind checkout.
+Run `npm run install-local` to copy the built files to `~/.forgemind/bin/`. Point every config there (use your absolute home path where a tool does not expand `~`), never at `dist/` in a checkout.
 
 Claude Code:
 
 ```
-claude mcp add --scope user forgemind-brain -- node /absolute/path/to/forgemind/dist/src/memory/brain-mcp.js --source claude-code
+claude mcp add --scope user forgemind-brain -- node ~/.forgemind/bin/brain-mcp.js --source claude-code
 ```
 
 Cursor, in `~/.cursor/mcp.json`:
 
 ```
-{"mcpServers":{"forgemind-brain":{"command":"node","args":["/absolute/path/to/forgemind/dist/src/memory/brain-mcp.js","--source","cursor"]}}}
+{"mcpServers":{"forgemind-brain":{"command":"node","args":["~/.forgemind/bin/brain-mcp.js","--source","cursor"]}}}
 ```
 
 Codex, in `~/.codex/config.toml` (Codex has no session hook, so MCP use is enough):
@@ -67,7 +67,7 @@ Codex, in `~/.codex/config.toml` (Codex has no session hook, so MCP use is enoug
 ```
 [mcp_servers.forgemind-brain]
 command = "node"
-args = ["/absolute/path/to/forgemind/dist/src/memory/brain-mcp.js", "--source", "codex"]
+args = ["~/.forgemind/bin/brain-mcp.js", "--source", "codex"]
 ```
 
 and add to the project `AGENTS.md`: "Call `brain_context` at start; call `brain_record` before finishing."
@@ -93,18 +93,18 @@ Agents should call `brain_context` at the start of a session and `brain_record` 
 
 ## Automatic capture and recall (hooks)
 
-Hooks close the memory loop in your own Claude Code and Cursor sessions. Run `npm run build` first.
+Hooks close the memory loop in your own Claude Code and Cursor sessions. Run `npm run install-local` first.
 
 Claude Code, in `~/.claude/settings.json`:
 
 ```
-{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node /absolute/path/to/forgemind/dist/src/memory/brain-hook.js session-start --source claude-code"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"node /absolute/path/to/forgemind/dist/src/memory/brain-hook.js session-end --source claude-code"}]}]}}
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node ~/.forgemind/bin/brain-hook.js session-start --source claude-code"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"node ~/.forgemind/bin/brain-hook.js session-end --source claude-code"}]}]}}
 ```
 
 Cursor, in `~/.cursor/hooks.json`:
 
 ```
-{"version":1,"hooks":{"sessionStart":[{"command":"node /absolute/path/to/forgemind/dist/src/memory/brain-hook.js session-start --source cursor"}],"sessionEnd":[{"command":"node /absolute/path/to/forgemind/dist/src/memory/brain-hook.js session-end --source cursor"}]}}
+{"version":1,"hooks":{"sessionStart":[{"command":"node ~/.forgemind/bin/brain-hook.js session-start --source cursor"}],"sessionEnd":[{"command":"node ~/.forgemind/bin/brain-hook.js session-end --source cursor"}]}}
 ```
 
 Session start injects the `brain_context` packet (at most 3200 characters) plus a reminder to call `brain_record` before finishing. Session end records one fallback fact per session (key `session:<id>`): the title comes from the first user prompt, files come from `git status`, secret-like values become `[redacted]`, and nothing is recorded when there is no prompt and no change. The session's own agent writes the rich summary through `brain_record`.
