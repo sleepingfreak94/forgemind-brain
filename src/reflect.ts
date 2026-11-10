@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { BrainStore, containsSecret } from './brain.js';
 import type { BrainKind } from './brain.js';
 import { buildPrompt } from './reflect-prompt.js';
-import { clientSources, planFor } from './reflect-runners.js';
+import { planFor } from './reflect-runners.js';
 import type { ModelRunner, Spawn } from './reflect-runners.js';
 
 export type { ModelRunner } from './reflect-runners.js';
