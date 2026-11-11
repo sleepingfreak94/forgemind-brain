@@ -56,8 +56,13 @@ claude mcp add --scope user forgemind-brain -- node ~/.forgemind/bin/brain-mcp.j
 ```
 
 Then add the [session hooks](docs/brain.md#hooks-claude-code-and-cursor) so memory
-loads and saves automatically. Cursor and Codex setup is in
-[docs/brain.md](docs/brain.md#set-up-the-tools).
+loads and saves automatically.
+
+Connect Cursor: add the server to `~/.cursor/mcp.json`, the hooks to
+`~/.cursor/hooks.json`, and, for the Cursor CLI, allow all eight brain tools in
+`~/.cursor/cli-config.json` (`brain_context`, `brain_search`, `brain_record`,
+`brain_propose`, `brain_adr`, `brain_recipe`, `brain_doc`, `brain_reflect_packet`).
+Exact snippets for Cursor and Codex are in [docs/brain.md](docs/brain.md#set-up-the-tools).
 
 Try it in any project:
 

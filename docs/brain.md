@@ -93,14 +93,20 @@ Cursor, in `~/.cursor/mcp.json`:
 {"mcpServers":{"forgemind-brain":{"command":"node","args":["/Users/<you>/.forgemind/bin/brain-mcp.js","--source","cursor"]}}}
 ```
 
-For the Cursor CLI, allow these four tools in the `permissions.allow` list of `~/.cursor/cli-config.json` (keep any entries already there):
+For the Cursor CLI (`cursor-agent`), allow all eight brain tools in the `permissions.allow` list of `~/.cursor/cli-config.json` (keep any entries already there). Without them, the CLI blocks or keeps asking for the missing tools. The Cursor editor does not read this file; approve the tools there when it first asks.
 
 ```
-Mcp(forgemind-brain:brain_context)
-Mcp(forgemind-brain:brain_search)
-Mcp(forgemind-brain:brain_record)
-Mcp(forgemind-brain:brain_propose)
+"Mcp(forgemind-brain:brain_context)",
+"Mcp(forgemind-brain:brain_search)",
+"Mcp(forgemind-brain:brain_record)",
+"Mcp(forgemind-brain:brain_propose)",
+"Mcp(forgemind-brain:brain_adr)",
+"Mcp(forgemind-brain:brain_recipe)",
+"Mcp(forgemind-brain:brain_doc)",
+"Mcp(forgemind-brain:brain_reflect_packet)"
 ```
+
+When an upgrade adds a new brain tool, add it to this list too.
 
 Codex, in `~/.codex/config.toml`:
 
