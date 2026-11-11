@@ -25,7 +25,7 @@ worked and what failed, without you re-explaining it.
    context. It holds the approved lessons for this project and recent history.
 2. **During work:** the agent can search the brain, record what it did, attach
    screenshots (for example from a bug bash) and propose new lessons.
-3. **Session end:** a hook records a fallback summary (first prompt and changed files),
+3. **Session end:** a hook records a fallback summary (first prompt, changed files and the first line of the agent's last reply as the outcome),
    so nothing is lost if the agent forgets.
 4. **Reflect:** say "reflect" in any tool to review recent sessions in-chat (`brain_reflect_packet`), or schedule it in the background; see `docs/brain.md`.
 5. **You review:** `npm run brain -- list --workspace <project> --status proposed`, then `approve` or
@@ -55,7 +55,7 @@ Connect Claude Code:
 claude mcp add --scope user forgemind-brain -- node ~/.forgemind/bin/brain-mcp.js --source claude-code
 ```
 
-Then add the [session hooks](docs/brain.md#hooks-claude-code-and-cursor) so memory
+Then add the [session hooks](docs/brain.md#hooks-claude-code-cursor-and-codex) so memory
 loads and saves automatically.
 
 Connect Cursor: add the server to `~/.cursor/mcp.json`, the hooks to

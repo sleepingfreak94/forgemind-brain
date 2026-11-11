@@ -116,9 +116,7 @@ command = "node"
 args = ["/Users/<you>/.forgemind/bin/brain-mcp.js", "--source", "codex"]
 ```
 
-Codex has no session hook, so add this to the project `AGENTS.md`: "Call `brain_context` at start; call `brain_record` before finishing."
-
-`--source codex` is also accepted by `brain-hook`, but Codex has no hooks, so nothing uses it today.
+Then add the Codex [session hooks](#hooks-claude-code-cursor-and-codex).
 
 Options: `--source claude-code|cursor|codex` (required), `--workspace` (default current directory, resolved to its git top-level), `--brain-dir`.
 
@@ -158,7 +156,7 @@ npm run brain -- docs export --workspace P --to DIR
 
 `docs export` writes the accepted ADRs as `NNNN-slug.md` into an existing directory and refuses to overwrite any file. Output and exit codes follow the other commands (one JSON line; 2 for usage errors, 1 for failures).
 
-## Hooks (Claude Code and Cursor)
+## Hooks (Claude Code, Cursor and Codex)
 
 Hooks close the memory loop automatically. Merge these entries into your existing files; don't replace the files. Claude Code, in `~/.claude/settings.json`:
 
@@ -172,7 +170,13 @@ Cursor, in `~/.cursor/hooks.json`:
 {"version":1,"hooks":{"sessionStart":[{"command":"node /Users/<you>/.forgemind/bin/brain-hook.js session-start --source cursor"}],"sessionEnd":[{"command":"node /Users/<you>/.forgemind/bin/brain-hook.js session-end --source cursor"}]}}
 ```
 
-Session start injects the `brain_context` packet plus a reminder to call `brain_record` and `brain_recipe` before finishing and `brain_adr` for significant decisions. Session end records one fallback fact per session (key `session:<id>`, evidence `hook:<source>`). It parses the transcript (`src/transcript.ts`, last 20 MB at most, bad lines skipped) and stores the user's exact typed prompts (only the secret spans are replaced by `[redacted]`; each at most 4000 characters, at most 50, 20000 in total, earliest kept within the last 20 MB of the transcript) plus signals: prompt count, corrections (a later prompt that starts with "no", "wrong", "that's not", "undo", "you didn't", "I told you", "why did you", "it still", "still broken" and similar; "no rush" and "nope, that works" are not), model, assistant turns, tool errors and duration. Tool results, caveats, `<command-name>` and command-output blocks, system reminders, interrupted-request markers and attachments are never prompts. The title is the first real prompt, the summary reads like `3 prompts, 1 corrections, 2 files changed, model X`, files come from `git status`, and nothing is recorded when there is no real prompt and no change. `brain_context` lists agent-recorded history before auto-captures and never shows an auto-capture without a real prompt; `brain_search` shows the signals and the first prompt (trimmed) only; `brain history` returns the stored prompts and signals. Cursor transcripts (`~/.cursor/projects/*/agent-transcripts/*/*.jsonl`) hold only `role`/`message` lines with the typed text inside `<user_query>`: prompts are captured, but there is no model, timestamp or tool-error data, so those signals stay null or zero. Hooks never call a model, always exit 0 and never block a session. To remove them, delete those entries from the two files; history stays in the brain.
+Codex, in `~/.codex/hooks.json` (Codex sends the same input as Claude Code and takes the same `hookSpecificOutput`; run `/hooks` in Codex once to trust them, and again after an upgrade changes them; Codex caps `SessionEnd` at 3 seconds, and a capture that runs longer is skipped):
+
+```json
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node /Users/<you>/.forgemind/bin/brain-hook.js session-start --source codex"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"node /Users/<you>/.forgemind/bin/brain-hook.js session-end --source codex","timeout":3}]}]}}
+```
+
+Session start injects the `brain_context` packet plus a reminder to call `brain_record` and `brain_recipe` before finishing and `brain_adr` for significant decisions. Session end records one fallback fact per session (key `session:<id>`, evidence `hook:<source>`). It parses the transcript (`src/transcript.ts`, last 20 MB at most, bad lines skipped) and stores the user's exact typed prompts (only the secret spans are replaced by `[redacted]`; each at most 4000 characters, at most 50, 20000 in total, earliest kept within the last 20 MB of the transcript) plus signals: prompt count, corrections (a later prompt that starts with "no", "wrong", "that's not", "undo", "you didn't", "I told you", "why did you", "it still", "still broken" and similar; "no rush" and "nope, that works" are not), model, assistant turns, tool errors and duration. Tool results, caveats, `<command-name>` and command-output blocks, system reminders, interrupted-request markers and attachments are never prompts. The title is the first real prompt, the outcome is the first non-empty line of the agent's last reply (markdown markers stripped, secrets redacted, at most 200 characters; `session ended` when there is none), the summary reads like `3 prompts, 1 corrections, 2 files changed, model X`, files come from `git status`, and nothing is recorded when there is no real prompt and no change. `brain_context` lists agent-recorded history before auto-captures and never shows an auto-capture without a real prompt; `brain_search` shows the signals and the first prompt (trimmed) only; `brain history` returns the stored prompts and signals. Cursor transcripts (`~/.cursor/projects/*/agent-transcripts/*/*.jsonl`) hold only `role`/`message` lines with the typed text inside `<user_query>`: prompts are captured, but there is no model, timestamp or tool-error data, so those signals stay null or zero. Codex rollout transcripts are read from their `event_msg` lines (`user_message` prompts, `agent_message` replies) and `turn_context` (model); Codex calls the format unstable, so this is best effort and untested against a live Codex (Codex was not installed where this was written). Hooks never call a model, always exit 0 and never block a session. To remove them, delete those entries from the files; history stays in the brain.
 
 ## Obsidian view
 
