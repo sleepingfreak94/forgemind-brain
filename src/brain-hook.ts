@@ -13,7 +13,7 @@ export interface BrainHookOptions { brainDirectory?: string; now?: () => number;
 
 const MAX_INPUT = 1048576;
 const MAX_PROMPT = 4000, MAX_PROMPTS = 50, MAX_PROMPT_TOTAL = 20000;
-const TITLE_PROMPT_CAP = 160;
+const TITLE_PROMPT_CAP = 160, MAX_OUTCOME = 200;
 const MAX_FILES = 200;
 const RECORD_LINE = 'Before you finish, call the forgemind-brain tools brain_record (what worked and what failed) and brain_recipe (plan, the exact prompts, dead ends, verification, outcome). Record significant decisions with brain_adr.';
 
@@ -53,7 +53,7 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   const data = parsed as Record<string, unknown>;
   let candidate: unknown;
   let sessionId: unknown;
-  if (source === 'claude-code') { candidate = data.cwd; sessionId = data.session_id; }
+  if (source !== 'cursor') { candidate = data.cwd; sessionId = data.session_id; } // Codex hooks send the Claude Code input shape
   else {
     const roots = data.workspace_roots;
     candidate = Array.isArray(roots) ? roots[0] : undefined;
@@ -67,9 +67,9 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
     try {
       const due = reflectReminder(brainDirectory, source, (options.now ?? Date.now)(), options.schedule, workspace);
       const text = contextText(store, workspace) + (due ? '\n' + due : '') + '\n' + RECORD_LINE;
-      return source === 'claude-code'
-        ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } })
-        : JSON.stringify({ additional_context: text });
+      return source === 'cursor'
+        ? JSON.stringify({ additional_context: text })
+        : JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
     } finally { store.close(); }
   }
   const transcript = data.transcript_path;
@@ -99,6 +99,9 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
     model: raw.model === null ? null : cut(raw.model, 100) || null, assistantTurns: n(raw.assistantTurns), toolErrors: n(raw.toolErrors),
     durationMs: raw.durationMs === null ? null : n(raw.durationMs) };
   const title = real.length > 0 ? cut(real[0]!.replace(/\s+/g, ' ').trim(), TITLE_PROMPT_CAP).trimEnd() : `Session: ${files.length} files changed`;
+  // The agent's closing message usually leads with what happened, so its first line is the outcome.
+  const firstLine = capture?.lastReply?.split('\n').map(l => l.replace(/^[\s#>*_`-]+|[*_`]+$/g, '').replace(/\s+/g, ' ').trim()).find(l => l !== '');
+  const outcome = firstLine ? cut(firstLine, MAX_OUTCOME).trimEnd() || 'session ended' : 'session ended';
   const summary = `${real.length} prompts, ${signals?.corrections ?? 0} corrections, ${files.length} files changed` + (signals?.model ? `, model ${signals.model}` : '');
   let id = typeof sessionId === 'string' && sessionId !== '' ? sessionId
     : sha(JSON.stringify([typeof transcript === 'string' ? transcript : workspace, new Date(now).toISOString().slice(0, 10)]));
@@ -106,7 +109,7 @@ async function runBrainHookCore(argv: string[], input: string, options: BrainHoo
   const store = new BrainStore(brainDirectory);
   try {
     store.record({ project: workspace, source, key: red('session:' + id), title,
-      summary: red(summary), files: files.map(red), outcome: red('session ended'), evidence: ['hook:' + source],
+      summary: red(summary), files: files.map(red), outcome: red(outcome), evidence: ['hook:' + source],
       prompts: real.length > 0 ? prompts : undefined, signals: real.length > 0 ? signals : undefined });
   } finally { store.close(); }
   return '';

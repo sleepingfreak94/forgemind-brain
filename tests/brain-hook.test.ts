@@ -161,14 +161,20 @@ test('garbage input returns empty string', async () => {
   assert.equal(await runBrainHook(['session-middle', '--source', 'x'], '{}', opts()), '');
 });
 
-test('codex is an accepted hook source and is recorded as codex', async () => {
-  const t = transcript([{ role: 'user', content: 'Codex prompt' }]);
-  const input = JSON.stringify({ session_id: sid(), workspace_roots: [ws], transcript_path: t });
-  const start = await runBrainHook(['session-start', '--source', 'codex'], input, opts());
-  assert.ok(JSON.parse(start).additional_context.startsWith('ForgeMind brain.'));
+test('codex hooks use the Claude Code shape and parse the rollout transcript', async () => {
+  const t = transcript([{ type: 'turn_context', payload: { model: 'gpt-x' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>x</environment_context>' }] } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'Codex prompt' } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: '**Fixed the flaky test.**\nDetails follow.' } }]);
+  const input = JSON.stringify({ session_id: sid(), cwd: sub, hook_event_name: 'SessionStart', source: 'startup', transcript_path: t });
+  const start = JSON.parse(await runBrainHook(['session-start', '--source', 'codex'], input, opts()));
+  assert.equal(start.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.ok(start.hookSpecificOutput.additionalContext.startsWith('ForgeMind brain.'));
   assert.equal(await runBrainHook(['session-end', '--source', 'codex'], input, opts(['a.ts'])), '');
   const row = history().find(x => x.title === 'Codex prompt');
   assert.equal(row?.source, 'codex');
+  assert.equal(row?.outcome, 'Fixed the flaky test.');
+  assert.match(row?.summary ?? '', /1 prompts, .*model gpt-x/);
   const bad = await runBrainHookDetailed(['session-start', '--source', 'gemini'], input, opts());
   assert.match(bad.error ?? '', /unknown source/);
 });
@@ -271,4 +277,18 @@ test('a resumed capture without prompts keeps the earlier prompts, signals and t
   assert.deepEqual(h.prompts, ['keep me']);
   assert.deepEqual(h.files, ['z.ts']);
   assert.match(h.summary, /^1 prompts/);
+});
+
+test('session-end outcome is the first line of the last reply, redacted and capped; falls back to session ended', async () => {
+  const end = async (lines: object[], prompt: string) => {
+    await runBrainHook(['session-end', '--source', 'claude-code'], JSON.stringify({ session_id: sid(), cwd: ws, transcript_path: transcript(lines) }), opts());
+    return history().find(x => x.title === prompt)!.outcome;
+  };
+  const reply = (text: string, id: string) => ({ type: 'assistant', message: { id, role: 'assistant', content: [{ type: 'text', text }] } });
+  const tool = (id: string) => ({ type: 'assistant', message: { id, role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] } });
+  assert.equal(await end([{ type: 'user', message: { role: 'user', content: 'outcome one' } }, reply('early', 'm1'),
+    reply('\n## Opened PR #12 for the fix\n\nmore', 'm2'), tool('m2')], 'outcome one'), 'Opened PR #12 for the fix');
+  assert.equal(await end([{ type: 'user', message: { role: 'user', content: 'outcome two' } }], 'outcome two'), 'session ended');
+  assert.equal((await end([{ type: 'user', message: { role: 'user', content: 'outcome three' } }, reply('x'.repeat(500), 'm3')], 'outcome three')).length, 200);
+  assert.ok(!(await end([{ type: 'user', message: { role: 'user', content: 'outcome four' } }, reply('Set password: hunter2hunter2', 'm4')], 'outcome four')).includes('hunter2'));
 });

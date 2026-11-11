@@ -6,7 +6,7 @@ export interface SessionSignals {
   prompts: number; corrections: number; correctionIndexes: number[]; model: string | null;
   assistantTurns: number; toolErrors: number; durationMs: number | null;
 }
-export interface ParsedTranscript { prompts: string[]; signals: SessionSignals }
+export interface ParsedTranscript { prompts: string[]; signals: SessionSignals; lastReply: string | null }
 
 const MAX_INDEXED_PROMPTS = 50;
 export const MAX_TRANSCRIPT_BYTES = 20 * 1024 * 1024;
@@ -45,12 +45,20 @@ function typedPrompt(content: unknown): string | undefined {
   return joined === '' ? undefined : joined;
 }
 
-/** Parse transcript text (Claude Code JSONL or Cursor agent-transcript JSONL). Never throws; skips bad lines. */
+function replyText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content.trim() || undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = content.filter(p => p && typeof p === 'object' && (p as { type?: unknown }).type === 'text' && typeof (p as { text?: unknown }).text === 'string')
+    .map(p => (p as { text: string }).text).join('\n').trim();
+  return text || undefined;
+}
+
+/** Parse transcript text (Claude Code JSONL, Cursor agent-transcript JSONL or Codex rollout JSONL). Never throws; skips bad lines. */
 export function parseTranscript(text: string): ParsedTranscript {
   const prompts: string[] = [];
   const turns = new Set<string>();
   let anonymousTurns = 0, toolErrors = 0, model: string | null = null;
-  let first = Infinity, last = -Infinity;
+  let first = Infinity, last = -Infinity, lastReply: string | null = null;
   for (const line of String(text).split('\n')) {
     if (line.trim() === '') continue;
     let o: unknown;
@@ -61,11 +69,20 @@ export function parseTranscript(text: string): ParsedTranscript {
     if (Number.isFinite(ts)) { first = Math.min(first, ts); last = Math.max(last, ts); }
     const message = e.message && typeof e.message === 'object' ? e.message as Record<string, unknown> : undefined;
     const role = e.type === 'user' || e.type === 'assistant' ? e.type : e.role;
+    const payload = e.payload && typeof e.payload === 'object' ? e.payload as Record<string, unknown> : undefined;
+    // Codex rollout: typed prompts and replies are event_msg lines; response_item lines repeat them plus injected context, so skip those.
+    if (e.type === 'turn_context' && typeof payload?.model === 'string' && payload.model !== '') { model = payload.model; continue; }
+    if (e.type === 'event_msg' && typeof payload?.message === 'string') {
+      if (payload.type === 'user_message' && payload.message.trim() !== '') prompts.push(payload.message.trim());
+      else if (payload.type === 'agent_message') { anonymousTurns++; lastReply = payload.message.trim() || lastReply; }
+      continue;
+    }
     if (e.isSidechain === true || e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) continue;
     if (role === 'assistant') {
       const id = message?.id;
       if (typeof id === 'string') turns.add(id); else anonymousTurns++;
       if (typeof message?.model === 'string' && message.model !== '' && message.model !== '<synthetic>') model = message.model;
+      lastReply = replyText(message?.content ?? e.content) ?? lastReply;
     } else if (role === 'user' && e.isMeta !== true) {
       const content = message?.content ?? e.content;
       if (Array.isArray(content) && content.some(p => p && typeof p === 'object' && (p as { type?: unknown }).type === 'tool_result')) {
@@ -80,7 +97,7 @@ export function parseTranscript(text: string): ParsedTranscript {
   const all = prompts.flatMap((p, i) => i > 0 && isCorrection(p) ? [i] : []);
   const correctionIndexes = all.filter(i => i < MAX_INDEXED_PROMPTS); // the store keeps at most 50 indexes
   return { prompts, signals: { prompts: prompts.length, corrections: all.length, correctionIndexes, model,
-    assistantTurns: turns.size + anonymousTurns, toolErrors, durationMs: Number.isFinite(first) && last >= first ? last - first : null } };
+    assistantTurns: turns.size + anonymousTurns, toolErrors, durationMs: Number.isFinite(first) && last >= first ? last - first : null }, lastReply };
 }
 
 /** Read at most the last 20 MB of a transcript file. Returns undefined for anything unreadable. */
