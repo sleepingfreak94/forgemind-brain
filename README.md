@@ -1,5 +1,7 @@
 # forgemind-brain
 
+[![sleepingfreak94/forgemind-brain MCP server](https://glama.ai/mcp/servers/sleepingfreak94/forgemind-brain/badges/score.svg)](https://glama.ai/mcp/servers/sleepingfreak94/forgemind-brain)
+
 **Local memory for AI coding agents.** Claude Code, Cursor and Codex share one
 brain on your machine. Each new session knows what was done in a project, what
 worked and what failed, without you re-explaining it.
