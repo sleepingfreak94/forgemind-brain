@@ -240,3 +240,9 @@ test('brain_doc reads an approved entry in full; brain_propose replaces retires 
   });
   assert.equal(call('brain_doc', { id: old }).isError, true, 'retired entries are not readable');
 });
+
+test('every tool parameter has a description', () => {
+  const tools = send({ method: 'tools/list' })!.result!.tools as unknown as { name: string; inputSchema: { properties: Record<string, { description?: string }> } }[];
+  for (const tool of tools)
+    for (const [name, schema] of Object.entries(tool.inputSchema.properties)) assert.ok(schema.description && schema.description.length > 10, `${tool.name}.${name}`);
+});

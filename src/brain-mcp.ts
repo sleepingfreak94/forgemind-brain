@@ -28,23 +28,34 @@ const INSTRUCTIONS = 'Call brain_context first. If the project has no accepted o
 const KINDS = ['convention', 'lesson', 'decision', 'pattern'];
 
 const TOOLS = [
-  { name: 'brain_context', description: 'Small ranked memory packet for this project: approved conventions and latest history. Call at session start.',
+  { name: 'brain_context', description: 'Return the memory packet for this project: approved lessons, conventions, decisions and patterns, recent session history, accepted ADRs and recent recipes. '
+    + 'Read-only, at most 3200 characters. Call once at the start of a session; use brain_search for anything not in it.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'brain_search', description: 'Search approved entries and history for this project. Returns at most 5 short items.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 200 },
-      limit: { type: 'integer', minimum: 1, maximum: 5 } }, required: ['query'], additionalProperties: false } },
-  { name: 'brain_propose', description: 'Propose a memory entry. It stays proposed until the owner approves it. To correct an approved entry, pass its id as replaces: '
-    + 'when the owner approves the new entry, the old one is retired. Agents cannot edit or delete entries directly.',
-    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: KINDS }, text: { type: 'string' }, reason: { type: 'string' },
+  { name: 'brain_search', description: 'Search this project\'s approved entries, session history, ADRs and recipes by keyword. Read-only; returns at most 5 one-line items, each with its id. '
+    + 'Use brain_doc with an id to read an item in full.',
+    inputSchema: { type: 'object', properties: {
+      query: { type: 'string', minLength: 2, maxLength: 200, description: 'Keywords to match, for example "e2e flaky workers". Words under 3 letters and common words are ignored.' },
+      limit: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum number of items to return (1 to 5, default 5).' } }, required: ['query'], additionalProperties: false } },
+  { name: 'brain_propose', description: 'Propose a durable memory entry for this project. It stays proposed, and does not guide any agent, until the owner approves it. To correct an approved entry, '
+    + 'pass its id as replaces: when the owner approves the new entry, the old one is retired. Agents cannot edit or delete entries directly. Text that looks like a secret is refused.',
+    inputSchema: { type: 'object', properties: {
+      kind: { type: 'string', enum: KINDS, description: 'convention (how this project does things), lesson (something learned the hard way), decision (a choice made) or pattern (a recurring code shape).' },
+      text: { type: 'string', description: 'The entry itself, one short self-contained statement (at most 2000 characters).' },
+      reason: { type: 'string', description: 'Why it is worth remembering: the evidence, such as the session, failure or review that showed it.' },
       replaces: { type: 'string', maxLength: 100, description: 'Optional id of an approved entry (from brain_search) that this proposal corrects.' } },
       required: ['kind', 'text', 'reason'], additionalProperties: false } },
-  { name: 'brain_record', description: 'Record what this session did or read (short summary, never raw content). Optional attachments: up to 10 absolute paths of png/jpg/gif/webp/pdf files, max 10 MB each. Call before finishing.',
-    inputSchema: { type: 'object', properties: { title: { type: 'string' }, summary: { type: 'string' },
-      files: { type: 'array', items: { type: 'string' } }, outcome: { type: 'string' },
-      attachments: { type: 'array', items: { type: 'string' }, maxItems: 10 } },
+  { name: 'brain_record', description: 'Record what this session did or read, as a short summary (never raw content), into the project history that later sessions see. '
+    + 'Call before finishing a task, and after reading tickets, chats, email or docs. A repeat with the same title and summary on the same day is stored once. Text that looks like a secret is refused.',
+    inputSchema: { type: 'object', properties: {
+      title: { type: 'string', description: 'One-line title of the work, for example "Fix login redirect".' },
+      summary: { type: 'string', description: 'What was done, what worked and what failed, with IDs or links (at most 4000 characters).' },
+      files: { type: 'array', items: { type: 'string' }, description: 'Optional files touched, as paths inside this workspace.' },
+      outcome: { type: 'string', description: 'Short result, for example "success", "failed: tests still red" or "draft PR #12 opened" (at most 200 characters).' },
+      attachments: { type: 'array', items: { type: 'string' }, maxItems: 10, description: 'Optional absolute paths of png, jpg, gif, webp or pdf files (at most 10, 10 MB each), such as bug-bash screenshots; they are copied into the brain.' } },
       required: ['title', 'summary', 'outcome'], additionalProperties: false } },
-  { name: 'brain_reflect_packet', description: "Recent sessions and recipes of this tool only, plus instructions for reflecting on them. Call when the user says 'reflect'.",
-    inputSchema: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 30 } }, additionalProperties: false } },
+  { name: 'brain_reflect_packet', description: "Return this tool's recent sessions and recipes for this project, with instructions for reflecting on them and proposing lessons with brain_propose. "
+    + "Read-only. Call only when the user says 'reflect'.",
+    inputSchema: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 30, description: 'How many past days to include (1 to 30, default 2).' } }, additionalProperties: false } },
   ...DOC_TOOLS,
 ];
 
