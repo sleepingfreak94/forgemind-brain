@@ -14,7 +14,7 @@ export const DOC_TOOLS = [
       verification: { type: 'string', maxLength: 8000 }, outcome: { type: 'string', maxLength: 8000 },
       files: { type: 'array', items: { type: 'string', maxLength: 1024 }, maxItems: 200 } },
       required: ['goal', 'plan', 'prompts', 'deadEnds', 'verification', 'outcome'], additionalProperties: false } },
-  { name: 'brain_doc', description: 'Read one ADR or recipe of this project in full, by id or ADR-n.',
+  { name: 'brain_doc', description: 'Read one ADR, recipe or approved memory entry (lesson, convention, decision, pattern) of this project in full, by id (as shown by brain_search) or ADR-n.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', maxLength: 100 } }, required: ['id'], additionalProperties: false } },
 ];
 const DOC_CAP = 12000;
@@ -35,7 +35,11 @@ export function runDocTool(name: string, args: Record<string, unknown>, store: B
     return doc.created ? `recipe ${doc.id} saved` : `recipe ${doc.id} already saved today; not updated`;
   }
   if (name === 'brain_doc') {
-    const body = `${UNTRUSTED}\n${getDocument(store, project, arg(args, 'id') as string).body}`;
+    const ref = arg(args, 'id');
+    const entry = typeof ref === 'string' ? store.approved(project).find(e => e.id === ref) : undefined;
+    const body = `${UNTRUSTED}\n${entry
+      ? `[${entry.kind}] ${entry.id}${entry.project === null ? ' (global)' : ''}, approved ${new Date(entry.reviewedAt ?? entry.createdAt).toISOString().slice(0, 10)}\n${entry.text}${entry.reason ? `\nReason: ${entry.reason}` : ''}`
+      : getDocument(store, project, ref as string).body}`;
     return body.length <= DOC_CAP ? body : body.slice(0, DOC_CAP - 1) + '…';
   }
   return undefined;

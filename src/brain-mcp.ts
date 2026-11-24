@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
-import { BrainStore, clientSources, defaultBrainDirectory } from './brain.js';
+import { BrainStore, REPLACES, clientSources, defaultBrainDirectory } from './brain.js';
 import { chatPacket } from './reflect-chat.js';
 import { DOC_TOOLS, adrSection, documentCandidates, runDocTool } from './documents-mcp.js';
 import type { BrainEntry, BrainHistory, BrainKind, BrainSource } from './brain.js';
@@ -33,8 +33,10 @@ const TOOLS = [
   { name: 'brain_search', description: 'Search approved entries and history for this project. Returns at most 5 short items.',
     inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 200 },
       limit: { type: 'integer', minimum: 1, maximum: 5 } }, required: ['query'], additionalProperties: false } },
-  { name: 'brain_propose', description: 'Propose a memory entry. It stays proposed until the owner approves it.',
-    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: KINDS }, text: { type: 'string' }, reason: { type: 'string' } },
+  { name: 'brain_propose', description: 'Propose a memory entry. It stays proposed until the owner approves it. To correct an approved entry, pass its id as replaces: '
+    + 'when the owner approves the new entry, the old one is retired. Agents cannot edit or delete entries directly.',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: KINDS }, text: { type: 'string' }, reason: { type: 'string' },
+      replaces: { type: 'string', maxLength: 100, description: 'Optional id of an approved entry (from brain_search) that this proposal corrects.' } },
       required: ['kind', 'text', 'reason'], additionalProperties: false } },
   { name: 'brain_record', description: 'Record what this session did or read (short summary, never raw content). Optional attachments: up to 10 absolute paths of png/jpg/gif/webp/pdf files, max 10 MB each. Call before finishing.',
     inputSchema: { type: 'object', properties: { title: { type: 'string' }, summary: { type: 'string' },
@@ -159,9 +161,11 @@ function runTool(name: string, args: Record<string, unknown>, store: BrainStore,
     return chatPacket(context.brainDirectory, context.source, context.workspace, days, (context.now ?? (() => new Date()))().getTime());
   }
   if (name === 'brain_propose') {
+    const replaces = args.replaces === undefined ? undefined : str(args, 'replaces');
+    if (replaces !== undefined && !store.approved(project).some(e => e.id === replaces)) throw new Error('replaces must be the id of an approved entry of this project');
     const id = store.propose({ kind: str(args, 'kind') as BrainKind, project, text: str(args, 'text'), reason: str(args, 'reason'),
-      evidence: ['mcp:' + context.source] });
-    return `${id} proposed; the owner must approve it`;
+      evidence: ['mcp:' + context.source, ...(replaces ? [REPLACES + replaces] : [])] });
+    return `${id} proposed; the owner must approve it` + (replaces ? ` (approving it retires ${replaces})` : '');
   }
   const doc = runDocTool(name, args, store, project, context.source, context.session ?? (context.now ?? (() => new Date()))().toISOString().slice(0, 10));
   if (doc !== undefined) return doc;
