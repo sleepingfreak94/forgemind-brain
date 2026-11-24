@@ -38,6 +38,24 @@ chats or email (Jira, Slack, Teams, Outlook) through your other MCP connectors.
 The summary holds decisions, outcomes and IDs; raw message content is never pasted. That way
 what an agent learned there is not lost when the session ends.
 
+## Why not just built-in memory?
+
+Claude Code's auto memory and `/insights` cover part of this. What they don't give you:
+
+- **Approval before guidance:** auto memory writes notes the agent reads straight away.
+  Here a lesson is only a proposal until you approve it.
+- **One brain for every tool:** Claude Code memory stays in Claude Code. This brain is
+  shared by Claude Code, Cursor and Codex.
+- **Recipes and ADRs:** a recipe keeps the plan, the exact prompts, dead ends,
+  verification and outcome of a task, so you can repeat it. ADRs keep decisions and why
+  they were made.
+
+**Why lessons are short:** a lesson is at most 300 characters because approved lessons
+go into each session's start packet, which is capped at 3,200 characters. Long how-tos
+belong in a recipe or ADR (each field up to 8,000 characters), which agents find with
+`brain_search` and read in full with `brain_doc` when they need them. The brain never edits your skills, CLAUDE.md or
+AGENTS.md; promoting a lesson into one of those stays your call.
+
 ## Quick start
 
 Requires Node.js 26.7 or newer (it uses the built-in `node:sqlite`). Tested on macOS.
