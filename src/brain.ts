@@ -34,6 +34,8 @@ const secrets = [/gh[po]_[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /\bs
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/, /(key|token|secret|password)["']?\s*[:=]/i];
 
 /** Local owner state; never a directory under the repository. */
+/** Evidence prefix on a proposal that corrects an approved entry; approving the proposal retires that entry. */
+export const REPLACES = 'replaces:';
 export function defaultBrainDirectory(): string { return join(homedir(), '.forgemind'); }
 
 const secretSpans = secrets.map(pattern => new RegExp(pattern.source, pattern.flags + 'g'));
@@ -253,23 +255,17 @@ export class BrainStore {
   approved(project: string): BrainEntry[] {
     return this.rows(`SELECT * FROM entries WHERE status = 'approved' AND (project = ? OR project IS NULL) ${order}`, [absolute(project)]);
   }
-  private change(id: string, to: BrainStatus, action: string, note?: string): void {
-    const text = note === undefined ? null : limited(note, 0, 2000, 'note');
-    this.transaction(() => {
-      const row = this.db.prepare('SELECT status FROM entries WHERE id = ?').get(id);
-      if (!row) throw new Error('unknown brain entry');
-      const from = row.status as string;
-      if (!(from === 'proposed' && (to === 'approved' || to === 'rejected')) && !(from === 'approved' && to === 'retired')) {
-        throw new Error(`invalid transition from ${from} to ${to}`);
-      }
-      const now = Date.now();
-      this.db.prepare('UPDATE entries SET status = ?, reviewed_at = ?, review_note = ? WHERE id = ?').run(to, now, text, id);
-      this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run(action, id, now);
-    });
+  /** Inside a transaction: retire the approved entries that the just-approved `id` says it replaces. */
+  private retireReplaced(id: string, now: number): void {
+    const evidence = JSON.parse(this.db.prepare('SELECT evidence FROM entries WHERE id = ?').get(id)!.evidence as string) as string[];
+    for (const old of evidence.filter(e => e.startsWith(REPLACES)).map(e => e.slice(REPLACES.length))) {
+      if (this.db.prepare("UPDATE entries SET status = 'retired', reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'approved'").run(now, `replaced by ${id}`, old).changes)
+        this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run('retire', old, now);
+    }
   }
-  approve(id: string): void { this.change(id, 'approved', 'approve'); }
-  reject(id: string, note?: string): void { this.change(id, 'rejected', 'reject', note); }
-  retire(id: string): void { this.change(id, 'retired', 'retire'); }
+  approve(id: string): void { this.changeMany([id], 'approved'); }
+  reject(id: string, note?: string): void { this.changeMany([id], 'rejected', note); }
+  retire(id: string): void { this.changeMany([id], 'retired'); }
   audit(): { action: string; entry: string; at: number }[] {
     return this.db.prepare('SELECT action, entry, at FROM audit ORDER BY sequence').all()
       .map(row => ({ action: row.action as string, entry: row.entry as string, at: row.at as number }));
@@ -289,6 +285,7 @@ export class BrainStore {
         const now = Date.now();
         this.db.prepare('UPDATE entries SET status = ?, reviewed_at = ?, review_note = ? WHERE id = ?').run(to, now, text, id);
         this.db.prepare('INSERT INTO audit (action, entry, at) VALUES (?, ?, ?)').run(action, id, now);
+        if (to === 'approved') this.retireReplaced(id, now);
       }
     });
   }
